@@ -163,12 +163,44 @@ REDIS_PORT=6379
 GCS_BUCKET_NAME=your-bucket-name
 ```
 
+### WebSocket Connection Issues
+
+#### Error: "1007 invalid frame payload data"
+
+This error occurs when the Gemini Live API receives a malformed setup message.
+
+**Solutions**:
+1. **Update your code**: Pull the latest changes with the corrected message format
+2. **Check API key**: Ensure your `GEMINI_API_KEY` is valid and not expired
+3. **Verify model availability**: Gemini 2.0 Flash Exp must be available in your region
+4. **Check logs**: Look for "Setup response" in logs to see what Gemini returned
+
+**Example of working setup**:
+```python
+setup_message = {
+    "setup": {
+        "model": "models/gemini-2.0-flash-exp",
+        "generation_config": {
+            "response_modalities": ["AUDIO"],
+            "speech_config": {
+                "voice_config": {
+                    "prebuilt_voice_config": {
+                        "voice_name": "Aoede"
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
 ### Still Having Issues?
 
 1. **Check API quotas**: Some APIs have free tier limits
 2. **Verify region**: Some models only work in certain regions (use `us-central1`)
 3. **Test with gcloud CLI**: Run `gcloud auth application-default login`
 4. **Check firewall**: Ensure no proxy/firewall is blocking Google APIs
+5. **Review logs**: Run backend with `--log-level debug` for detailed error messages
 
 ### Common Error Messages
 
@@ -180,6 +212,8 @@ GCS_BUCKET_NAME=your-bucket-name
 | `Billing not enabled` | No billing account | Enable billing in Console |
 | `API not enabled` | Vertex AI API disabled | Enable in API Library |
 | `Model not found` | Wrong model name or region | Use correct model ID |
+| `1007 invalid frame payload data` | Wrong WebSocket message format | Updated in latest code - pull changes |
+| `Request contains invalid argument` | Malformed API request | Check API key format and message structure |
 
 ### Support
 

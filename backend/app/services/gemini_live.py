@@ -150,24 +150,50 @@ class GeminiLiveConnection:
 
         logger.info("Connected to Gemini Live WebSocket")
 
-        # Send initial configuration
+        # Send initial configuration with correct format
         setup_message = {
             "setup": {
                 "model": "models/gemini-2.0-flash-exp",
                 "generation_config": {
-                    "response_modalities": ["AUDIO", "TEXT"],  # Both audio and text
+                    "response_modalities": ["AUDIO"],  # Start with audio only
                     "speech_config": {
                         "voice_config": {
-                            "prebuilt_voice_config": {"voice_name": self.voice_name}
+                            "prebuilt_voice_config": {
+                                "voice_name": self.voice_name
+                            }
                         }
-                    },
-                },
-                "system_instruction": {"parts": [{"text": self.system_prompt}]},
+                    }
+                }
             }
         }
 
+        # Add system instruction if provided
+        if self.system_prompt and self.system_prompt.strip():
+            setup_message["setup"]["system_instruction"] = {
+                "parts": [
+                    {
+                        "text": self.system_prompt.strip()
+                    }
+                ]
+            }
+
         await gemini_ws.send(json.dumps(setup_message))
-        logger.info(f"Gemini Live configured with voice: {self.voice_name}")
+        logger.info(f"Sent setup message with voice: {self.voice_name}")
+
+        # Wait for setup response
+        try:
+            setup_response = await gemini_ws.recv()
+            response_data = json.loads(setup_response)
+            logger.info(f"Setup response: {response_data}")
+
+            # Check for setup complete
+            if "setupComplete" in response_data or response_data.get("setup"):
+                logger.info("Gemini Live setup completed successfully")
+            else:
+                logger.warning(f"Unexpected setup response: {response_data}")
+        except Exception as e:
+            logger.error(f"Error receiving setup response: {e}")
+            raise
 
         return gemini_ws
 
@@ -266,22 +292,33 @@ class GeminiLiveConnection:
 
         try:
             async for message in self.gemini_ws:
-                data = json.loads(message)
+                try:
+                    data = json.loads(message)
+                    logger.debug(f"Received from Gemini: {list(data.keys())}")
 
-                # Handle server content
-                if "serverContent" in data:
-                    await self._process_server_content(data["serverContent"])
+                    # Handle server content (model responses)
+                    if "serverContent" in data:
+                        await self._process_server_content(data["serverContent"])
 
-                # Handle turn complete
-                if data.get("turnComplete"):
-                    await self._handle_turn_complete()
+                    # Handle turn complete
+                    if "turnComplete" in data and data["turnComplete"]:
+                        await self._handle_turn_complete()
 
-                # Handle audio output
-                if "audioOut" in data:
-                    audio_data = data["audioOut"].get("data", "")
-                    if audio_data:
-                        await self._send_audio_to_frontend(audio_data, "audio/pcm")
+                    # Handle tool calls (if any)
+                    if "toolCall" in data:
+                        logger.info(f"Tool call received: {data['toolCall']}")
 
+                    # Handle tool call cancellation
+                    if "toolCallCancellation" in data:
+                        logger.info("Tool call cancelled")
+
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to decode Gemini message: {e}")
+                except Exception as e:
+                    logger.error(f"Error processing Gemini message: {e}")
+
+        except websockets.exceptions.ConnectionClosed as e:
+            logger.info(f"Gemini Live connection closed: {e.code} {e.reason}")
         except Exception as e:
             logger.error(f"Gemini to Frontend error: {e}")
 
@@ -292,31 +329,37 @@ class GeminiLiveConnection:
         Args:
             content: Server content message
         """
-        if "modelTurn" not in content:
-            return
+        # Handle model turn (text and inline data)
+        if "modelTurn" in content:
+            for part in content["modelTurn"].get("parts", []):
+                # Audio stream
+                if "inlineData" in part:
+                    audio_b64 = part["inlineData"]["data"]
+                    mime_type = part["inlineData"].get("mimeType", "audio/pcm")
+                    await self._send_audio_to_frontend(audio_b64, mime_type)
 
-        for part in content["modelTurn"].get("parts", []):
-            # Audio stream
-            if "inlineData" in part:
-                audio_b64 = part["inlineData"]["data"]
-                await self._send_audio_to_frontend(audio_b64, part["inlineData"]["mimeType"])
+                # Text transcript (simultaneous with audio)
+                if "text" in part:
+                    text_content = part["text"]
+                    await self._send_text_to_frontend(text_content, "assistant")
 
-            # Text transcript (simultaneous with audio)
-            if "text" in part:
-                text_content = part["text"]
-                await self._send_text_to_frontend(text_content, "assistant")
+                    # Save to conversation history
+                    from datetime import datetime
 
-                # Save to conversation history
-                from datetime import datetime
+                    message = ConversationMessage(
+                        role="assistant", text=text_content, timestamp=datetime.utcnow()
+                    )
+                    self.conversation_history.append(message)
 
-                message = ConversationMessage(
-                    role="assistant", text=text_content, timestamp=datetime.utcnow()
-                )
-                self.conversation_history.append(message)
+                    # Callback
+                    if self.on_text_received:
+                        self.on_text_received("assistant", text_content)
 
-                # Callback
-                if self.on_text_received:
-                    self.on_text_received("assistant", text_content)
+        # Handle interrupted state
+        if "interrupted" in content and content["interrupted"]:
+            logger.info("Model turn was interrupted")
+            if self.frontend_ws:
+                await self.frontend_ws.send_json({"type": "interrupted"})
 
     async def _send_audio_to_frontend(self, audio_base64: str, mime_type: str) -> None:
         """
