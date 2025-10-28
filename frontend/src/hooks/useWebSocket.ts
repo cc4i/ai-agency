@@ -16,7 +16,20 @@ const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000';
 
 interface WebSocketMessage {
   type: string;
-  data: any;
+  data?: any;
+  mime_type?: string;
+  text?: string;
+  timestamp?: string;
+  role?: string;
+  agent_id?: string;
+  status?: string;
+  current_task?: string;
+  asset_type?: string;
+  asset_data?: any;
+  announcement_type?: string;
+  message?: string;
+  changed_fields?: string[];
+  brief?: any;
 }
 
 export function useWebSocket(sessionId: string, projectId: string) {
@@ -45,8 +58,34 @@ export function useWebSocket(sessionId: string, projectId: string) {
 
         // Parse JSON message
         const message: WebSocketMessage = JSON.parse(event.data);
+        console.log('[WebSocket] Received:', message.type);
 
         switch (message.type) {
+          case 'audio_output':
+            // Handle audio output from Gemini Live
+            if (message.data) {
+              handleAudioOutput(message.data, message.mime_type || 'audio/pcm');
+            }
+            setProducerSpeaking(false); // Audio chunk received, might be done speaking
+            break;
+
+          case 'text_output':
+            // Handle text transcript
+            if (message.text) {
+              console.log('[Producer]:', message.text);
+              addAnnouncement({
+                message: message.text,
+                type: 'info',
+                timestamp: message.timestamp || new Date().toISOString(),
+              });
+            }
+            break;
+
+          case 'turn_complete':
+            console.log('[WebSocket] Turn complete');
+            setProducerSpeaking(false);
+            break;
+
           case 'brief_update':
             if (message.data.brief) {
               updateBrief(message.data.brief, message.data.changed_fields || []);
@@ -83,11 +122,8 @@ export function useWebSocket(sessionId: string, projectId: string) {
             });
             break;
 
-          case 'producer_speaking_start':
-            setProducerSpeaking(true);
-            break;
-
-          case 'producer_speaking_end':
+          case 'interrupted':
+            console.log('[WebSocket] Turn interrupted');
             setProducerSpeaking(false);
             break;
 
@@ -101,14 +137,72 @@ export function useWebSocket(sessionId: string, projectId: string) {
             break;
 
           default:
-            console.log('Unknown message type:', message.type);
+            console.log('Unknown message type:', message.type, message);
         }
       } catch (error) {
         console.error('Error handling WebSocket message:', error);
       }
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [setBrief, updateBrief, addAsset, updateAgentStatus, addAnnouncement, setProducerSpeaking]
   );
+
+  const handleAudioOutput = useCallback(async (audioBase64: string, mimeType: string) => {
+    if (!audioContextRef.current) {
+      audioContextRef.current = new AudioContext();
+    }
+
+    try {
+      console.log('[Audio] Received audio chunk, size:', audioBase64.length);
+
+      // Decode base64 to ArrayBuffer
+      const binary = atob(audioBase64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+
+      // For PCM audio, we need to create an AudioBuffer manually
+      if (mimeType === 'audio/pcm' || mimeType.includes('pcm')) {
+        // PCM16 data
+        const pcm16 = new Int16Array(bytes.buffer);
+
+        // Convert to Float32 for Web Audio API
+        const float32 = new Float32Array(pcm16.length);
+        for (let i = 0; i < pcm16.length; i++) {
+          float32[i] = pcm16[i] / 32768.0; // Convert to -1.0 to 1.0
+        }
+
+        // Create audio buffer
+        const audioBuffer = audioContextRef.current.createBuffer(
+          1, // mono
+          float32.length,
+          16000 // sample rate
+        );
+
+        audioBuffer.getChannelData(0).set(float32);
+
+        // Play audio
+        const source = audioContextRef.current.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(audioContextRef.current.destination);
+        source.start();
+
+        console.log('[Audio] Playing PCM audio chunk');
+      } else {
+        // For other formats, try to decode
+        const audioBuffer = await audioContextRef.current.decodeAudioData(bytes.buffer);
+        const source = audioContextRef.current.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(audioContextRef.current.destination);
+        source.start();
+
+        console.log('[Audio] Playing decoded audio');
+      }
+    } catch (error) {
+      console.error('Error playing audio output:', error);
+    }
+  }, []);
 
   const handleAudioData = useCallback(async (audioBlob: Blob) => {
     if (!audioContextRef.current) {
@@ -176,7 +270,21 @@ export function useWebSocket(sessionId: string, projectId: string) {
 
   const sendAudio = useCallback((audioData: ArrayBuffer) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(audioData);
+      // Convert ArrayBuffer to base64
+      const bytes = new Uint8Array(audioData);
+      let binary = '';
+      for (let i = 0; i < bytes.byteLength; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      const base64 = btoa(binary);
+
+      // Send as JSON message
+      const message = {
+        type: 'audio_input',
+        data: base64,
+      };
+
+      wsRef.current.send(JSON.stringify(message));
     }
   }, []);
 

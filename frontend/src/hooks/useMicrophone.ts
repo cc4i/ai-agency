@@ -32,71 +32,6 @@ export function useMicrophone({
 
   const { setMicrophoneActive, setAudioLevel } = useProjectStore();
 
-  const startRecording = useCallback(async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          sampleRate,
-        },
-      });
-
-      // Create audio context for visualization
-      audioContextRef.current = new AudioContext({ sampleRate });
-      const source = audioContextRef.current.createMediaStreamSource(stream);
-      analyserRef.current = audioContextRef.current.createAnalyser();
-      analyserRef.current.fftSize = 256;
-      source.connect(analyserRef.current);
-
-      // Start audio level monitoring
-      monitorAudioLevel();
-
-      // Create media recorder
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'audio/webm;codecs=opus',
-      });
-
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          event.data.arrayBuffer().then(onAudioData);
-        }
-      };
-
-      mediaRecorder.start(chunkDuration);
-      mediaRecorderRef.current = mediaRecorder;
-
-      setIsRecording(true);
-      setMicrophoneActive(true);
-      setError(null);
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Failed to access microphone';
-      setError(errorMessage);
-      console.error('Microphone error:', err);
-    }
-  }, [onAudioData, chunkDuration, sampleRate, setMicrophoneActive]);
-
-  const stopRecording = useCallback(() => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop();
-      mediaRecorderRef.current.stream.getTracks().forEach((track) => track.stop());
-      mediaRecorderRef.current = null;
-    }
-
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current);
-    }
-
-    if (audioContextRef.current) {
-      audioContextRef.current.close();
-      audioContextRef.current = null;
-    }
-
-    setIsRecording(false);
-    setMicrophoneActive(false);
-    setAudioLevel(0);
-  }, [setMicrophoneActive, setAudioLevel]);
-
   const monitorAudioLevel = useCallback(() => {
     if (!analyserRef.current) return;
 
@@ -118,6 +53,99 @@ export function useMicrophone({
 
     update();
   }, [setAudioLevel]);
+
+  const startRecording = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          sampleRate,
+          channelCount: 1, // Mono audio
+        },
+      });
+
+      // Create audio context for processing and visualization
+      audioContextRef.current = new AudioContext({ sampleRate });
+      const source = audioContextRef.current.createMediaStreamSource(stream);
+
+      // Create analyser for visualization
+      analyserRef.current = audioContextRef.current.createAnalyser();
+      analyserRef.current.fftSize = 256;
+      source.connect(analyserRef.current);
+
+      // Start audio level monitoring
+      monitorAudioLevel();
+
+      // Create ScriptProcessor to capture raw PCM audio
+      // Note: ScriptProcessor is deprecated but widely supported
+      // For production, consider using AudioWorklet
+      const bufferSize = 4096;
+      const processor = audioContextRef.current.createScriptProcessor(bufferSize, 1, 1);
+
+      processor.onaudioprocess = (e) => {
+        const inputData = e.inputBuffer.getChannelData(0);
+
+        // Convert Float32Array to Int16Array (PCM16)
+        const pcm16 = new Int16Array(inputData.length);
+        for (let i = 0; i < inputData.length; i++) {
+          // Clamp and convert to 16-bit integer
+          const s = Math.max(-1, Math.min(1, inputData[i]));
+          pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        }
+
+        // Send PCM16 data as ArrayBuffer
+        onAudioData(pcm16.buffer);
+      };
+
+      source.connect(processor);
+      processor.connect(audioContextRef.current.destination);
+
+      // Store reference for cleanup
+      (audioContextRef.current as any).processor = processor;
+
+      setIsRecording(true);
+      setMicrophoneActive(true);
+      setError(null);
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to access microphone';
+      setError(errorMessage);
+      console.error('Microphone error:', err);
+    }
+  }, [onAudioData, sampleRate, setMicrophoneActive, monitorAudioLevel]);
+
+  const stopRecording = useCallback(() => {
+    // Stop MediaRecorder if it exists (legacy)
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+      mediaRecorderRef.current.stream.getTracks().forEach((track) => track.stop());
+      mediaRecorderRef.current = null;
+    }
+
+    // Stop audio context and processor
+    if (audioContextRef.current) {
+      // Disconnect processor
+      const processor = (audioContextRef.current as any).processor;
+      if (processor) {
+        processor.disconnect();
+      }
+
+      // Stop all tracks
+      const state = audioContextRef.current.state;
+      if (state !== 'closed') {
+        audioContextRef.current.close();
+      }
+      audioContextRef.current = null;
+    }
+
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+    }
+
+    setIsRecording(false);
+    setMicrophoneActive(false);
+    setAudioLevel(0);
+  }, [setMicrophoneActive, setAudioLevel]);
 
   const toggleRecording = useCallback(() => {
     if (isRecording) {
