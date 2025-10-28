@@ -137,27 +137,23 @@ class GeminiLiveConnection:
         """
         logger.info("Connecting to Gemini Live API")
 
-        # In production, use actual Gemini Live WebSocket URL
-        # For now, this is a mock implementation
-        gemini_ws_url = settings.gemini_live_ws_url
+        # Construct WebSocket URL with API key
+        gemini_ws_url = f"{settings.gemini_live_ws_url}?key={settings.gemini_api_key}"
 
-        # Note: Actual implementation would connect to real Gemini Live
-        # This is a placeholder for the structure
-        logger.warning("Using mock Gemini Live connection (implement real WebSocket)")
+        # Connect to Gemini Live
+        gemini_ws = await websockets.connect(
+            gemini_ws_url,
+            additional_headers={
+                "Content-Type": "application/json"
+            }
+        )
 
-        # Mock connection setup
-        # gemini_ws = await websockets.connect(
-        #     gemini_ws_url,
-        #     extra_headers={
-        #         "Authorization": f"Bearer {settings.gemini_api_key}",
-        #         "Content-Type": "application/json"
-        #     }
-        # )
+        logger.info("Connected to Gemini Live WebSocket")
 
         # Send initial configuration
         setup_message = {
             "setup": {
-                "model": "gemini-2.0-flash-exp",
+                "model": "models/gemini-2.0-flash-exp",
                 "generation_config": {
                     "response_modalities": ["AUDIO", "TEXT"],  # Both audio and text
                     "speech_config": {
@@ -170,12 +166,10 @@ class GeminiLiveConnection:
             }
         }
 
-        # In production: await gemini_ws.send(json.dumps(setup_message))
+        await gemini_ws.send(json.dumps(setup_message))
         logger.info(f"Gemini Live configured with voice: {self.voice_name}")
 
-        # Return mock connection for now
-        # TODO: Replace with real WebSocket connection
-        return None  # type: ignore
+        return gemini_ws
 
     async def _handle_frontend_to_gemini(self) -> None:
         """Forward user input (audio) to Gemini Live."""
@@ -195,9 +189,9 @@ class GeminiLiveConnection:
                 elif message_type == "text_input":
                     # Text fallback mode
                     text = message.get("text")
-                    if text:
+                    if text and self.gemini_ws:
                         logger.info(f"Text input from user: {text}")
-                        # TODO: Send to Gemini Live as text
+                        await self._send_text_to_gemini(text)
 
                 elif message_type == "ping":
                     # Heartbeat
@@ -229,17 +223,45 @@ class GeminiLiveConnection:
                 }
             }
 
-            # In production: await self.gemini_ws.send(json.dumps(message))
+            await self.gemini_ws.send(json.dumps(message))
             logger.debug(f"Sent {len(audio_data)} bytes to Gemini Live")
 
         except Exception as e:
             logger.error(f"Error sending audio to Gemini: {e}")
 
+    async def _send_text_to_gemini(self, text: str) -> None:
+        """
+        Send text message to Gemini Live.
+
+        Args:
+            text: Text message to send
+        """
+        if not self.gemini_ws:
+            return
+
+        try:
+            message = {
+                "client_content": {
+                    "turns": [
+                        {
+                            "role": "user",
+                            "parts": [{"text": text}]
+                        }
+                    ],
+                    "turn_complete": True
+                }
+            }
+
+            await self.gemini_ws.send(json.dumps(message))
+            logger.info(f"Sent text to Gemini Live: {text[:50]}...")
+
+        except Exception as e:
+            logger.error(f"Error sending text to Gemini: {e}")
+
     async def _handle_gemini_to_frontend(self) -> None:
         """Receive from Gemini Live and forward BOTH audio and text to frontend."""
         if not self.gemini_ws:
-            # Mock mode - generate sample responses
-            await self._mock_gemini_responses()
+            logger.error("No Gemini WebSocket connection")
             return
 
         try:
@@ -251,8 +273,14 @@ class GeminiLiveConnection:
                     await self._process_server_content(data["serverContent"])
 
                 # Handle turn complete
-                if "turnComplete" in data:
+                if data.get("turnComplete"):
                     await self._handle_turn_complete()
+
+                # Handle audio output
+                if "audioOut" in data:
+                    audio_data = data["audioOut"].get("data", "")
+                    if audio_data:
+                        await self._send_audio_to_frontend(audio_data, "audio/pcm")
 
         except Exception as e:
             logger.error(f"Gemini to Frontend error: {e}")
@@ -340,27 +368,6 @@ class GeminiLiveConnection:
 
         if self.on_turn_complete:
             self.on_turn_complete()
-
-    async def _mock_gemini_responses(self) -> None:
-        """
-        Generate mock responses for development.
-        TODO: Remove when real Gemini Live is connected.
-        """
-        logger.info("Using mock Gemini Live responses")
-
-        # Simulate initial greeting
-        await asyncio.sleep(1)
-        await self._send_text_to_frontend(
-            "Welcome. I'm your Executive Producer. Ready to create something amazing?",
-            "assistant",
-        )
-
-        # Keep connection alive
-        while self.is_connected:
-            await asyncio.sleep(10)
-            # Heartbeat
-            if self.frontend_ws:
-                await self.frontend_ws.send_json({"type": "heartbeat"})
 
     async def disconnect(self) -> None:
         """Close all connections."""

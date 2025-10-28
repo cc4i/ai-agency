@@ -1,5 +1,6 @@
 """FastAPI application entry point."""
 
+import json
 import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
@@ -80,8 +81,8 @@ async def health_check():
     }
 
 
-@app.websocket("/ws/live/{session_id}")
-async def gemini_live_websocket(websocket: WebSocket, session_id: str):
+@app.websocket("/ws/{session_id}/{project_id}")
+async def gemini_live_websocket(websocket: WebSocket, session_id: str, project_id: str):
     """
     WebSocket endpoint for Gemini Live streaming conversation.
 
@@ -95,46 +96,33 @@ async def gemini_live_websocket(websocket: WebSocket, session_id: str):
     Args:
         websocket: FastAPI WebSocket connection
         session_id: Unique session identifier
+        project_id: Project identifier
     """
-    await websocket.accept()
-    logger.info(f"WebSocket connection established for session: {session_id}")
+    from app.services.gemini_live import GeminiLiveConnection
+
+    logger.info(f"WebSocket connection request for session: {session_id}, project: {project_id}")
+
+    # Create Gemini Live connection
+    gemini_connection = GeminiLiveConnection(
+        session_id=session_id,
+        voice_name="Aoede"  # Professional female voice
+    )
 
     try:
-        # TODO: Initialize Gemini Live connection
-        # TODO: Set up audio streaming pipeline
-        # TODO: Set up event listeners for agent updates
-
-        while True:
-            # Receive message from frontend
-            data = await websocket.receive_json()
-
-            # Handle different message types
-            message_type = data.get("type")
-
-            if message_type == "audio_input":
-                # User audio chunk
-                audio_data = data.get("data")
-                # TODO: Forward to Gemini Live
-                logger.debug(f"Received audio chunk for session {session_id}")
-
-            elif message_type == "text_input":
-                # Text message (fallback mode)
-                text = data.get("text")
-                logger.info(f"Received text from user: {text}")
-                # TODO: Process text input
-
-            elif message_type == "ping":
-                # Heartbeat
-                await websocket.send_json({"type": "pong"})
-
-            else:
-                logger.warning(f"Unknown message type: {message_type}")
+        # Establish connection: Frontend → Backend → Gemini Live
+        await gemini_connection.connect(websocket)
 
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected for session: {session_id}")
     except Exception as e:
         logger.error(f"WebSocket error for session {session_id}: {e}")
-        await websocket.close(code=1011, reason="Internal server error")
+        try:
+            await websocket.close(code=1011, reason=f"Connection error: {str(e)}")
+        except:
+            pass
+    finally:
+        # Clean up
+        await gemini_connection.disconnect()
 
 
 @app.websocket("/ws/project/{project_id}")
@@ -173,36 +161,99 @@ async def project_websocket(websocket: WebSocket, project_id: str):
 @app.post("/api/sessions")
 async def create_session():
     """Create a new session."""
-    # TODO: Implement session creation
-    return {"session_id": "temp_session_id", "status": "created"}
+    import uuid
+    from datetime import datetime
+
+    session_id = f"session_{uuid.uuid4().hex[:12]}"
+
+    # Store session in Redis
+    session_data = {
+        "session_id": session_id,
+        "status": "created",
+        "created_at": datetime.utcnow().isoformat(),
+    }
+
+    await redis_client.client.set(
+        f"session:{session_id}",
+        json.dumps(session_data),
+        ex=86400  # 24 hour expiry
+    )
+
+    logger.info(f"Created session: {session_id}")
+    return session_data
 
 
 @app.get("/api/sessions/{session_id}")
 async def get_session(session_id: str):
     """Get session details."""
-    # TODO: Implement session retrieval
-    return {"session_id": session_id, "status": "active"}
+    import json
+
+    session_json = await redis_client.client.get(f"session:{session_id}")
+
+    if not session_json:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    return json.loads(session_json)
 
 
 @app.post("/api/projects")
 async def create_project():
     """Create a new project."""
-    # TODO: Implement project creation
-    return {"project_id": "temp_project_id", "status": "created"}
+    import uuid
+    from datetime import datetime
+
+    project_id = f"project_{uuid.uuid4().hex[:12]}"
+
+    # Create default project brief
+    from app.models.brief import ProjectBrief
+
+    brief = ProjectBrief(
+        project_id=project_id,
+        session_id="default",
+        product_name="",
+        product_category="",
+        theme="",
+        key_features=[],
+        brand_tone="",
+        target_market="",
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+
+    # Store in Redis
+    await redis_client.save_project_brief(brief)
+
+    logger.info(f"Created project: {project_id}")
+    return {"project_id": project_id, "status": "created"}
 
 
 @app.get("/api/projects/{project_id}")
 async def get_project(project_id: str):
     """Get project details."""
-    # TODO: Implement project retrieval
-    return {"project_id": project_id, "status": "planning"}
+    brief = await redis_client.get_project_brief(project_id)
+
+    if not brief:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    return brief.model_dump()
 
 
 @app.post("/api/assets/upload")
 async def upload_asset():
     """Upload an asset (sketch, image, etc.)."""
-    # TODO: Implement asset upload to GCS
-    return {"asset_id": "temp_asset_id", "url": "gs://bucket/asset.png"}
+    import uuid
+
+    # For now, return placeholder
+    # In production, this would upload to Google Cloud Storage
+    asset_id = f"asset_{uuid.uuid4().hex[:12]}"
+
+    return {
+        "asset_id": asset_id,
+        "url": f"https://storage.googleapis.com/{settings.gcs_bucket_name}/{asset_id}",
+        "status": "uploaded"
+    }
 
 
 if __name__ == "__main__":
