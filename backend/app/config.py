@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     # Google AI API Configuration
     google_application_credentials: str = ""
     google_cloud_project: str = ""
+    google_cloud_location: str = "us-central1"
     gemini_api_key: str = ""
 
     # Redis Configuration
