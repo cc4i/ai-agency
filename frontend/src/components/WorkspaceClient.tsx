@@ -1,124 +1,99 @@
-'use client'
+/**
+ * Workspace Client - Main application interface.
+ *
+ * Layout:
+ * - Top: Agent Status Bar
+ * - Left: Asset Display (main content area)
+ * - Right: Project Brief Panel
+ * - Bottom: Producer Announcements
+ * - Center Fixed: Microphone Interface
+ */
 
-import { useEffect, useState } from 'react'
+'use client';
+
+import { useEffect, useState } from 'react';
+import { useWebSocket } from '@/hooks/useWebSocket';
+import { useMicrophone } from '@/hooks/useMicrophone';
+import { ProjectBriefPanel } from './ProjectBriefPanel';
+import { MicrophoneInterface } from './MicrophoneInterface';
+import { AgentStatusBar } from './AgentStatusBar';
+import { AssetDisplay } from './AssetDisplay';
+import { ProducerAnnouncements } from './ProducerAnnouncements';
+import { useProjectStore } from '@/stores/useProjectStore';
 
 export default function WorkspaceClient() {
-  const [isReady, setIsReady] = useState(false)
+  const [sessionId, setSessionId] = useState<string>('');
+  const [projectId, setProjectId] = useState<string>('');
+  const [isInitialized, setIsInitialized] = useState(false);
 
+  const { reset } = useProjectStore();
+
+  // Initialize session and project IDs
   useEffect(() => {
-    setIsReady(true)
-  }, [])
+    // Generate or retrieve session ID
+    const storedSessionId = localStorage.getItem('session_id');
+    if (storedSessionId) {
+      setSessionId(storedSessionId);
+    } else {
+      const newSessionId = `session_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+      localStorage.setItem('session_id', newSessionId);
+      setSessionId(newSessionId);
+    }
 
-  if (!isReady) {
+    // For demo, use Aura project
+    // In production, this would be dynamic or selected by user
+    const demoProjectId = 'aura_smart_sneaker';
+    setProjectId(demoProjectId);
+
+    setIsInitialized(true);
+
+    // Reset store on mount
+    reset();
+  }, [reset]);
+
+  // WebSocket connection
+  const { sendAudio, isConnected } = useWebSocket(sessionId, projectId);
+
+  // Microphone
+  const { isRecording, toggleRecording } = useMicrophone({
+    onAudioData: sendAudio,
+    chunkDuration: 100,
+    sampleRate: 16000,
+  });
+
+  if (!isInitialized) {
     return (
-      <div className="flex h-screen items-center justify-center">
-        <div className="text-center">
-          <h1 className="text-2xl font-bold">AI Agency</h1>
-          <p className="text-muted-foreground mt-2">Loading...</p>
-        </div>
+      <div className="min-h-screen bg-black flex items-center justify-center">
+        <div className="text-zinc-500">Initializing...</div>
       </div>
-    )
+    );
   }
 
   return (
-    <div className="flex h-screen flex-col bg-background">
-      {/* Header */}
-      <header className="border-b border-border px-6 py-4">
-        <div className="flex items-center justify-between">
-          <h1 className="text-xl font-bold">Welcome, Creative Director.</h1>
-          <button className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
-            Show Me the API
-          </button>
-        </div>
-      </header>
+    <div className="min-h-screen bg-black text-white flex flex-col">
+      {/* Agent Status Bar */}
+      <AgentStatusBar />
 
-      {/* Main content */}
+      {/* Main Content Area */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Project Brief Panel (Left) */}
-        <aside className="w-80 border-r border-border bg-card p-6">
-          <div className="space-y-4">
-            <div>
-              <h2 className="text-lg font-semibold mb-2">Project Brief</h2>
-              <p className="text-sm text-muted-foreground">
-                Campaign details will appear here as you work with the Executive Producer.
-              </p>
-            </div>
-          </div>
-        </aside>
+        {/* Asset Display - Main Content */}
+        <AssetDisplay />
 
-        {/* Workspace (Center) */}
-        <main className="flex-1 overflow-auto p-6">
-          <div className="flex h-full items-center justify-center">
-            <div className="text-center max-w-md">
-              <div className="mb-8">
-                <div className="w-24 h-24 mx-auto rounded-full bg-primary/20 flex items-center justify-center mb-4">
-                  <svg
-                    className="w-12 h-12 text-primary"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"
-                    />
-                  </svg>
-                </div>
-                <h2 className="text-2xl font-bold mb-2">Ready to Begin</h2>
-                <p className="text-muted-foreground mb-6">
-                  Click the microphone and say "Let&apos;s get started" to begin your campaign.
-                </p>
-              </div>
+        {/* Project Brief Panel - Right Sidebar */}
+        <ProjectBriefPanel />
+      </div>
 
-              {/* Placeholder for persistent microphone */}
-              <div className="microphone-glow inline-block">
-                <button className="w-20 h-20 rounded-full bg-primary text-primary-foreground flex items-center justify-center hover:bg-primary/90 transition-all">
-                  <svg
-                    className="w-10 h-10"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"
-                    />
-                  </svg>
-                </button>
-              </div>
-              <p className="text-sm text-muted-foreground mt-4">Click to speak</p>
-            </div>
-          </div>
-        </main>
+      {/* Producer Announcements - Bottom Panel */}
+      <ProducerAnnouncements />
 
-        {/* Conversation Panel (Right) */}
-        <aside className="w-96 border-l border-border bg-card p-6">
-          <div className="space-y-4">
-            <div>
-              <h2 className="text-lg font-semibold mb-2">Conversation</h2>
-              <p className="text-sm text-muted-foreground mb-4">
-                Audio + Text Transcript
-              </p>
-            </div>
+      {/* Microphone Interface - Fixed Center Bottom */}
+      <MicrophoneInterface isRecording={isRecording} onToggle={toggleRecording} />
 
-            <div className="space-y-3 text-sm">
-              <div className="p-3 rounded-lg bg-muted/50">
-                <div className="flex items-start gap-2">
-                  <span className="text-lg">🤖</span>
-                  <div className="flex-1">
-                    <p className="font-medium text-xs text-muted-foreground mb-1">Producer</p>
-                    <p>Welcome. I&apos;m your Executive Producer. Ready to create something amazing?</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </aside>
+      {/* Session Info - Bottom Right */}
+      <div className="fixed bottom-4 right-4 text-xs text-zinc-600">
+        <div>Session: {sessionId.slice(0, 12)}...</div>
+        <div>Project: {projectId}</div>
       </div>
     </div>
-  )
+  );
 }
