@@ -79,10 +79,33 @@ cd frontend
 # Install dependencies
 npm install
 
+# Set up environment variables
+cp .env.local.example .env.local
+# (Optional) Edit .env.local to customize WebSocket URL
+
 # Run development server
 npm run dev
 
 # Open browser to http://localhost:3000
+```
+
+### Running the Complete System
+
+```bash
+# Terminal 1: Start Redis
+docker run -d -p 6379:6379 redis:latest --appendonly yes
+
+# Terminal 2: Start Backend
+cd backend
+source .venv/bin/activate
+uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+# Terminal 3: Start Frontend
+cd frontend
+npm run dev
+
+# Open http://localhost:3000 in your browser
+# Click the microphone to start the voice session
 ```
 
 ## Demo Campaigns
@@ -140,7 +163,7 @@ npm run lint
 
 ## Project Status
 
-**Current Phase**: Phase 3 Complete ✓ - Executive Producer Logic
+**Current Phase**: Phase 4 Complete ✓ - Frontend Implementation
 
 **Phase 1 Complete ✓ - Foundation & Infrastructure**:
 - ✓ Project structure setup
@@ -180,9 +203,21 @@ npm run lint
 - ✓ Producer personality and prompts
 - ✓ Integration tests
 
+**Phase 4 Complete ✓ - Frontend Implementation**:
+- ✓ Zustand store for state management
+- ✓ WebSocket hooks for audio streaming and real-time updates
+- ✓ Microphone hook with audio level visualization
+- ✓ Project Brief Panel with field-level highlights
+- ✓ Agent Status Bar with real-time indicators
+- ✓ Asset Display components (strategy, art, video, audio, web)
+- ✓ Producer Announcements chat interface
+- ✓ Persistent Microphone Interface
+- ✓ Main Workspace layout with dark theme
+- ✓ TypeScript implementation with type safety
+- ✓ Next.js 14+ App Router integration
+
 **Next Steps**:
-- Phase 4: Frontend Implementation with voice interface
-- Phase 5: Integration & Polish
+- Phase 5: Integration & Polish (E2E testing, deployment, refinements)
 
 ## Documentation
 
