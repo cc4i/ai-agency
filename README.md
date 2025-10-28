@@ -219,6 +219,19 @@ npm run lint
 **Next Steps**:
 - Phase 5: Integration & Polish (E2E testing, deployment, refinements)
 
+## Troubleshooting
+
+If you encounter issues starting the backend or get "403 Forbidden" errors:
+
+👉 **See [backend/TROUBLESHOOTING.md](./backend/TROUBLESHOOTING.md)** for detailed solutions
+
+Common issues:
+- Missing or invalid `GEMINI_API_KEY`
+- Google Cloud credentials not set (`GOOGLE_APPLICATION_CREDENTIALS`)
+- APIs not enabled in Google Cloud Console
+- Billing not enabled
+- Service account missing permissions
+
 ## Documentation
 
 - [Design Document](./design.md)
@@ -226,6 +239,7 @@ npm run lint
 - [Design Review](./DESIGN_REVIEW.md)
 - [Product Flexibility](./PRODUCT_FLEXIBILITY.md)
 - [Project Instructions](./CLAUDE.md)
+- [Troubleshooting Guide](./backend/TROUBLESHOOTING.md)
 
 ## License
 
