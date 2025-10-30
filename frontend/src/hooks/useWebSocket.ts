@@ -11,6 +11,7 @@
 
 import { useEffect, useRef, useCallback } from 'react';
 import { useProjectStore } from '@/stores/useProjectStore';
+import { logger } from '@/utils/logger';
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000';
 
@@ -20,7 +21,7 @@ interface WebSocketMessage {
   mime_type?: string;
   text?: string;
   timestamp?: string;
-  role?: string;
+  role?: 'user' | 'assistant';
   agent_id?: string;
   status?: string;
   current_task?: string;
@@ -36,6 +37,19 @@ export function useWebSocket(sessionId: string, projectId: string) {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
   const audioContextRef = useRef<AudioContext | null>(null);
+  const audioQueueRef = useRef<AudioBuffer[]>([]);
+  const isPlayingRef = useRef<boolean>(false);
+  const nextPlayTimeRef = useRef<number>(0); // Track scheduled playback time for gapless audio
+  const transcriptBuffer = useRef<{ role: 'user' | 'assistant'; text: string } | null>(null);
+
+  // Audio processing chain - create once and reuse
+  const audioFilterRef = useRef<BiquadFilterNode | null>(null);
+  const audioCompressorRef = useRef<DynamicsCompressorNode | null>(null);
+
+  // Audio processing toggle - set to false to bypass filter/compressor for testing
+  const enableAudioProcessing = useRef<boolean>(false); // Toggle this to test raw audio
+
+  const sessionPrefix = `[Session: ${sessionId.slice(0, 8)}...][Project: ${projectId}]`;
 
   const {
     setBrief,
@@ -43,6 +57,7 @@ export function useWebSocket(sessionId: string, projectId: string) {
     addAsset,
     updateAgentStatus,
     addAnnouncement,
+    addTranscriptMessage, // New action
     setConnected,
     setProducerSpeaking,
   } = useProjectStore();
@@ -58,32 +73,42 @@ export function useWebSocket(sessionId: string, projectId: string) {
 
         // Parse JSON message
         const message: WebSocketMessage = JSON.parse(event.data);
-        console.log('[WebSocket] Received:', message.type);
+        logger.debug(`${sessionPrefix} [WebSocket] ⬇ Received: ${message.type}`);
 
         switch (message.type) {
           case 'audio_output':
             // Handle audio output from Gemini Live
             if (message.data) {
+              setProducerSpeaking(true); // Producer is speaking
               handleAudioOutput(message.data, message.mime_type || 'audio/pcm');
             }
-            setProducerSpeaking(false); // Audio chunk received, might be done speaking
             break;
 
           case 'text_output':
-            // Handle text transcript
-            if (message.text) {
-              console.log('[Producer]:', message.text);
-              addAnnouncement({
-                message: message.text,
-                type: 'info',
-                timestamp: message.timestamp || new Date().toISOString(),
-              });
+            // Buffer fragmented transcript text
+            if (message.text && message.role) {
+              if (transcriptBuffer.current && transcriptBuffer.current.role === message.role) {
+                transcriptBuffer.current.text += message.text;
+              } else {
+                transcriptBuffer.current = {
+                  role: message.role,
+                  text: message.text,
+                };
+              }
             }
             break;
 
           case 'turn_complete':
             console.log('[WebSocket] Turn complete');
             setProducerSpeaking(false);
+            // Commit the buffered transcript for the completed turn
+            if (transcriptBuffer.current) {
+              addTranscriptMessage({
+                ...transcriptBuffer.current,
+                timestamp: new Date().toISOString(),
+              });
+              transcriptBuffer.current = null; // Reset buffer
+            }
             break;
 
           case 'brief_update':
@@ -125,6 +150,7 @@ export function useWebSocket(sessionId: string, projectId: string) {
           case 'interrupted':
             console.log('[WebSocket] Turn interrupted');
             setProducerSpeaking(false);
+            transcriptBuffer.current = null; // Clear buffer on interruption
             break;
 
           case 'error':
@@ -144,16 +170,126 @@ export function useWebSocket(sessionId: string, projectId: string) {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [setBrief, updateBrief, addAsset, updateAgentStatus, addAnnouncement, setProducerSpeaking]
+    [setBrief, updateBrief, addAsset, updateAgentStatus, addAnnouncement, addTranscriptMessage, setProducerSpeaking]
   );
 
-  const handleAudioOutput = useCallback(async (audioBase64: string, mimeType: string) => {
+  const initAudioChain = useCallback(() => {
     if (!audioContextRef.current) {
-      audioContextRef.current = new AudioContext();
+      // Higher quality 24kHz sample rate
+      audioContextRef.current = new AudioContext({ sampleRate: 24000 });
+      logger.info(`[Audio Context] Created with sample rate: ${audioContextRef.current.sampleRate}`);
+    }
+
+    // Create filter and compressor ONCE and reuse them (only if processing enabled)
+    if (enableAudioProcessing.current && !audioFilterRef.current && audioContextRef.current) {
+      // Low-pass filter to reduce high-frequency noise
+      audioFilterRef.current = audioContextRef.current.createBiquadFilter();
+      audioFilterRef.current.type = 'lowpass';
+      audioFilterRef.current.frequency.value = 8000; // Remove frequencies above 8kHz
+      audioFilterRef.current.Q.value = 1;
+
+      // Compressor to normalize volume and reduce clipping
+      // UPDATED: Less aggressive settings to reduce artifacts
+      audioCompressorRef.current = audioContextRef.current.createDynamicsCompressor();
+      audioCompressorRef.current.threshold.value = -18; // CHANGED from -24 (less aggressive)
+      audioCompressorRef.current.knee.value = 30;
+      audioCompressorRef.current.ratio.value = 4; // CHANGED from 12 (gentler compression)
+      audioCompressorRef.current.attack.value = 0.003;
+      audioCompressorRef.current.release.value = 0.25;
+
+      // Connect filter → compressor → destination (permanent chain)
+      audioFilterRef.current.connect(audioCompressorRef.current);
+      audioCompressorRef.current.connect(audioContextRef.current.destination);
+
+      logger.info('[Audio Chain] ✓ Created filter + compressor chain (threshold: -18dB, ratio: 4:1)');
+    } else if (!enableAudioProcessing.current) {
+      logger.warn('[Audio Chain] ⚠️ Audio processing DISABLED - using raw audio');
+    }
+  }, []);
+
+  const playNextAudioBuffer = useCallback(() => {
+    if (audioQueueRef.current.length === 0) {
+      isPlayingRef.current = false;
+      setProducerSpeaking(false);
+      console.log('[Audio Queue] ✓ Queue empty, producer finished speaking');
+      return;
+    }
+
+    // Initialize audio chain if needed
+    initAudioChain();
+
+    if (!audioContextRef.current) {
+      console.error('[Audio] Audio context not initialized');
+      return;
+    }
+
+    // Only check filter if processing is enabled
+    if (enableAudioProcessing.current && !audioFilterRef.current) {
+      console.error('[Audio] Audio processing enabled but filter not initialized');
+      return;
+    }
+
+    // Resume AudioContext if suspended (browser autoplay policy)
+    if (audioContextRef.current.state === 'suspended') {
+      audioContextRef.current.resume().then(() => {
+        console.log('[Audio Context] Resumed from suspended state');
+      });
+    }
+
+    const audioBuffer = audioQueueRef.current.shift()!;
+    isPlayingRef.current = true;
+
+    const source = audioContextRef.current.createBufferSource();
+    source.buffer = audioBuffer;
+
+    // Connect source - either to processing chain or direct to destination
+    if (enableAudioProcessing.current && audioFilterRef.current) {
+      // Connect source to the REUSED filter chain (not creating new filters!)
+      source.connect(audioFilterRef.current);
+      console.log('[Audio Queue] 🔊 Using audio processing (filter + compressor)');
+    } else {
+      // Bypass processing - connect directly to speakers
+      source.connect(audioContextRef.current.destination);
+      console.log('[Audio Queue] 🔊 Bypassing audio processing (raw audio)');
+    }
+
+    // Use scheduled playback for gapless audio
+    const currentTime = audioContextRef.current.currentTime;
+    const playTime = Math.max(currentTime, nextPlayTimeRef.current);
+
+    source.start(playTime);
+
+    // Schedule next chunk to start exactly when this one ends
+    nextPlayTimeRef.current = playTime + audioBuffer.duration;
+
+    console.log('[Audio Queue] ▶ Playing buffer (duration:', audioBuffer.duration.toFixed(2), 's) at time:', playTime.toFixed(3), ', queue size:', audioQueueRef.current.length);
+
+    // Check for more buffers when this one finishes
+    source.onended = () => {
+      // Play next buffer if available
+      if (audioQueueRef.current.length > 0) {
+        playNextAudioBuffer();
+      } else {
+        // Reset timing for next turn
+        nextPlayTimeRef.current = 0;
+        isPlayingRef.current = false;
+        setProducerSpeaking(false);
+        console.log('[Audio Queue] ✓ All buffers played, producer finished speaking');
+      }
+    };
+  }, [setProducerSpeaking, initAudioChain]);
+
+  const handleAudioOutput = useCallback(async (audioBase64: string, mimeType: string) => {
+    // Initialize audio chain if needed
+    initAudioChain();
+
+    if (!audioContextRef.current) {
+      console.error('[Audio] Audio context not initialized');
+      return;
     }
 
     try {
-      console.log('[Audio] Received audio chunk, size:', audioBase64.length);
+      console.log('[Audio] ⬇ Received chunk:', audioBase64.length, 'chars, mime:', mimeType);
 
       // Decode base64 to ArrayBuffer
       const binary = atob(audioBase64);
@@ -162,47 +298,122 @@ export function useWebSocket(sessionId: string, projectId: string) {
         bytes[i] = binary.charCodeAt(i);
       }
 
+      console.log('[Audio] Decoded to', bytes.length, 'bytes');
+
+      let audioBuffer: AudioBuffer;
+
       // For PCM audio, we need to create an AudioBuffer manually
       if (mimeType === 'audio/pcm' || mimeType.includes('pcm')) {
-        // PCM16 data
-        const pcm16 = new Int16Array(bytes.buffer);
+        // PCM16 data (16-bit = 2 bytes per sample)
+        // Use DataView for explicit little-endian byte order handling
+        const dataView = new DataView(bytes.buffer);
+        const numSamples = bytes.length / 2; // 2 bytes per sample
 
-        // Convert to Float32 for Web Audio API
-        const float32 = new Float32Array(pcm16.length);
-        for (let i = 0; i < pcm16.length; i++) {
-          float32[i] = pcm16[i] / 32768.0; // Convert to -1.0 to 1.0
+        console.log('[Audio] Processing PCM16:', bytes.length, 'bytes =', numSamples, 'samples');
+
+        // Convert to Float32 for Web Audio API with proper normalization
+        const float32 = new Float32Array(numSamples);
+        let maxSample = 0;
+        let minSample = 0;
+        let clippedCount = 0;
+        let silentCount = 0;
+        let sumSquares = 0;
+
+        for (let i = 0; i < numSamples; i++) {
+          // Read little-endian int16 (Gemini sends little-endian)
+          const sample = dataView.getInt16(i * 2, true); // true = little-endian
+
+          // Track statistics
+          const absSample = Math.abs(sample);
+          if (sample > maxSample) maxSample = sample;
+          if (sample < minSample) minSample = sample;
+          if (absSample > 30000) clippedCount++;
+          if (absSample < 10) silentCount++;
+          sumSquares += sample * sample;
+
+          // Proper normalization: -32768 to 32767 → -1.0 to 1.0
+          float32[i] = sample / 32768.0;
         }
 
-        // Create audio buffer
-        const audioBuffer = audioContextRef.current.createBuffer(
+        // Calculate RMS (Root Mean Square) for volume level
+        const rms = Math.sqrt(sumSquares / numSamples);
+        const rmsDb = 20 * Math.log10(rms / 32768);
+
+        // Calculate zero-crossing rate (indicator of noise vs speech)
+        let zeroCrossings = 0;
+        for (let i = 1; i < numSamples; i++) {
+          const dataView = new DataView(bytes.buffer);
+          const prev = dataView.getInt16((i - 1) * 2, true);
+          const curr = dataView.getInt16(i * 2, true);
+          if ((prev >= 0 && curr < 0) || (prev < 0 && curr >= 0)) {
+            zeroCrossings++;
+          }
+        }
+        const zcr = zeroCrossings / numSamples;
+
+        // Sample first 10 values for pattern analysis
+        const firstSamples = [];
+        for (let i = 0; i < Math.min(10, numSamples); i++) {
+          const dataView = new DataView(bytes.buffer);
+          firstSamples.push(dataView.getInt16(i * 2, true));
+        }
+
+        logger.info(`[Audio] PCM16 samples converted: ${numSamples}`);
+        logger.info('[Audio] 📊 Quality Analysis:');
+        logger.info(`  - Max amplitude: ${maxSample} (+) / Min: ${minSample} (-)`);
+        logger.info(`  - Range: ${maxSample - minSample} / 65536 possible`);
+        logger.info(`  - RMS level: ${rms.toFixed(1)} (${rmsDb.toFixed(1)} dB)`);
+        logger.info(`  - Clipped samples: ${clippedCount} (${(clippedCount/numSamples*100).toFixed(2)}%)`);
+        logger.info(`  - Silent samples: ${silentCount} (${(silentCount/numSamples*100).toFixed(2)}%)`);
+        logger.info(`  - Zero-crossing rate: ${zcr.toFixed(4)} (noise indicator: >0.5 = likely noise)`);
+        logger.info(`  - First 10 samples: ${firstSamples.join(', ')}`);
+
+        // Detect issues
+        if (clippedCount > numSamples * 0.01) {
+          logger.warn('⚠️ [Audio] HIGH CLIPPING DETECTED - Audio may be distorted!');
+        }
+        if (rms < 100) {
+          logger.warn('⚠️ [Audio] VERY LOW VOLUME - Audio may be barely audible');
+        }
+        if (maxSample === minSample) {
+          logger.error('❌ [Audio] NO VARIATION - Audio is completely flat (DC offset or silence)');
+        }
+        if (zcr > 0.5) {
+          logger.warn('⚠️ [Audio] HIGH ZERO-CROSSING RATE - May indicate noise or high-frequency artifacts');
+        }
+
+        // Provide quality verdict
+        const qualityScore = (rms > 500 && rms < 10000 && clippedCount < numSamples * 0.01 && zcr < 0.3) ? '✅ GOOD' : '⚠️ NEEDS INVESTIGATION';
+        logger.info(`[Audio] Quality verdict: ${qualityScore}`);
+
+        // Create audio buffer - CRITICAL: must match AudioContext sample rate (24kHz)
+        audioBuffer = audioContextRef.current.createBuffer(
           1, // mono
           float32.length,
-          16000 // sample rate
+          24000 // Gemini outputs at 24kHz
         );
 
         audioBuffer.getChannelData(0).set(float32);
-
-        // Play audio
-        const source = audioContextRef.current.createBufferSource();
-        source.buffer = audioBuffer;
-        source.connect(audioContextRef.current.destination);
-        source.start();
-
-        console.log('[Audio] Playing PCM audio chunk');
+        console.log('[Audio] ✓ PCM buffer created, duration:', audioBuffer.duration.toFixed(2), 's, rate: 24kHz');
       } else {
         // For other formats, try to decode
-        const audioBuffer = await audioContextRef.current.decodeAudioData(bytes.buffer);
-        const source = audioContextRef.current.createBufferSource();
-        source.buffer = audioBuffer;
-        source.connect(audioContextRef.current.destination);
-        source.start();
+        audioBuffer = await audioContextRef.current.decodeAudioData(bytes.buffer);
+        console.log('[Audio] ✓ Decoded buffer, duration:', audioBuffer.duration.toFixed(2), 's');
+      }
 
-        console.log('[Audio] Playing decoded audio');
+      // Add to queue
+      audioQueueRef.current.push(audioBuffer);
+      console.log('[Audio Queue] Added to queue, total buffers:', audioQueueRef.current.length);
+
+      // Start playing if not already playing
+      if (!isPlayingRef.current) {
+        console.log('[Audio Queue] Starting playback');
+        playNextAudioBuffer();
       }
     } catch (error) {
-      console.error('Error playing audio output:', error);
+      console.error('[Audio] ✗ Error processing audio:', error);
     }
-  }, []);
+  }, [playNextAudioBuffer, initAudioChain]);
 
   const handleAudioData = useCallback(async (audioBlob: Blob) => {
     if (!audioContextRef.current) {
@@ -223,37 +434,52 @@ export function useWebSocket(sessionId: string, projectId: string) {
   }, []);
 
   const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
+    // Don't connect if IDs are empty
+    if (!sessionId || !projectId) {
+      console.warn(`${sessionPrefix} [WebSocket] ⚠ Cannot connect: missing session or project ID`);
       return;
     }
 
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      console.log(`${sessionPrefix} [WebSocket] Already connected, skipping`);
+      return;
+    }
+
+    // Close any existing connection
+    if (wsRef.current) {
+      console.log(`${sessionPrefix} [WebSocket] Closing existing connection before reconnect`);
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+
+    console.log(`${sessionPrefix} [WebSocket] 🔌 Connecting to ${WS_URL}/ws/${sessionId}/${projectId}`);
     const ws = new WebSocket(`${WS_URL}/ws/${sessionId}/${projectId}`);
 
     ws.onopen = () => {
-      console.log('WebSocket connected');
+      console.log(`${sessionPrefix} [WebSocket] ✓ Connected to backend`);
       setConnected(true);
     };
 
     ws.onmessage = handleMessage;
 
     ws.onerror = (error) => {
-      console.error('WebSocket error:', error);
+      console.error(`${sessionPrefix} [WebSocket] ✗ Error:`, error);
       setConnected(false);
     };
 
-    ws.onclose = () => {
-      console.log('WebSocket disconnected');
+    ws.onclose = (event) => {
+      console.log(`${sessionPrefix} [WebSocket] ✗ Disconnected (code: ${event.code}, reason: ${event.reason})`);
       setConnected(false);
 
       // Attempt reconnect after 3 seconds
       reconnectTimeoutRef.current = setTimeout(() => {
-        console.log('Attempting to reconnect...');
+        console.log(`${sessionPrefix} [WebSocket] 🔄 Attempting to reconnect...`);
         connect();
       }, 3000);
     };
 
     wsRef.current = ws;
-  }, [sessionId, projectId, handleMessage, setConnected]);
+  }, [sessionId, projectId, handleMessage, setConnected, sessionPrefix]);
 
   const disconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) {
@@ -265,8 +491,29 @@ export function useWebSocket(sessionId: string, projectId: string) {
       wsRef.current = null;
     }
 
+    // Disconnect and clean up audio chain
+    if (audioFilterRef.current) {
+      audioFilterRef.current.disconnect();
+      audioFilterRef.current = null;
+    }
+    if (audioCompressorRef.current) {
+      audioCompressorRef.current.disconnect();
+      audioCompressorRef.current = null;
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
+
+    // Clear audio queue and reset timing
+    audioQueueRef.current = [];
+    isPlayingRef.current = false;
+    nextPlayTimeRef.current = 0;
+
     setConnected(false);
-  }, [setConnected]);
+    setProducerSpeaking(false);
+    console.log('[Audio] Cleaned up audio chain');
+  }, [setConnected, setProducerSpeaking]);
 
   const sendAudio = useCallback((audioData: ArrayBuffer) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -294,17 +541,31 @@ export function useWebSocket(sessionId: string, projectId: string) {
     }
   }, []);
 
+  const sendTurnComplete = useCallback(() => {
+    // DEPRECATED: Do not send turn_complete for audio streaming
+    // Gemini Live's built-in VAD automatically detects turn completion from silence
+    // Sending explicit messages causes 1007 "invalid argument" errors
+    console.log(`${sessionPrefix} [Turn Complete] Gemini VAD will auto-detect (no message sent)`);
+  }, [sessionPrefix]);
+
   useEffect(() => {
-    connect();
+    // Only connect if we have valid IDs
+    if (sessionId && projectId) {
+      console.log(`${sessionPrefix} [WebSocket] useEffect triggered, connecting...`);
+      connect();
+    }
 
     return () => {
+      console.log(`${sessionPrefix} [WebSocket] useEffect cleanup, disconnecting...`);
       disconnect();
     };
-  }, [connect, disconnect]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, projectId]); // Only depend on IDs, not connect/disconnect functions
 
   return {
     sendAudio,
     sendMessage,
+    sendTurnComplete,
     isConnected: wsRef.current?.readyState === WebSocket.OPEN,
   };
 }

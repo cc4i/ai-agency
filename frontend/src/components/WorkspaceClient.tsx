@@ -19,6 +19,7 @@ import { MicrophoneInterface } from './MicrophoneInterface';
 import { AgentStatusBar } from './AgentStatusBar';
 import { AssetDisplay } from './AssetDisplay';
 import { ProducerAnnouncements } from './ProducerAnnouncements';
+import { TranscriptDisplay } from './TranscriptDisplay'; // Import the new component
 import { useProjectStore } from '@/stores/useProjectStore';
 
 export default function WorkspaceClient() {
@@ -51,17 +52,21 @@ export default function WorkspaceClient() {
     reset();
   }, [reset]);
 
-  // WebSocket connection
-  const { sendAudio, isConnected } = useWebSocket(sessionId, projectId);
+  // IMPORTANT: Call hooks unconditionally (Rules of Hooks)
+  // Even if IDs aren't ready yet - the hooks will handle it
+  const { sendAudio, sendTurnComplete, isConnected } = useWebSocket(sessionId, projectId);
 
   // Microphone
   const { isRecording, toggleRecording } = useMicrophone({
     onAudioData: sendAudio,
+    onTurnComplete: undefined, // Not used - Gemini handles turn detection
     chunkDuration: 100,
-    sampleRate: 16000,
+    sampleRate: 16000, // Gemini Live API requires 16kHz input (outputs 24kHz)
+    vadEnabled: false, // Disable frontend VAD - let Gemini's VAD handle it
   });
 
-  if (!isInitialized) {
+  // Render loading state AFTER hooks (Rules of Hooks - hooks must be called unconditionally)
+  if (!isInitialized || !sessionId || !projectId) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center">
         <div className="text-zinc-500">Initializing...</div>
@@ -75,12 +80,15 @@ export default function WorkspaceClient() {
       <AgentStatusBar />
 
       {/* Main Content Area */}
-      <div className="flex flex-1 overflow-hidden">
-        {/* Asset Display - Main Content */}
-        <AssetDisplay />
+      <div className="relative flex flex-1 overflow-hidden">
+        {/* Main content container */}
+        <div className="flex-1 flex flex-col overflow-hidden">
+          <AssetDisplay />
+          <ProjectBriefPanel />
+        </div>
 
-        {/* Project Brief Panel - Right Sidebar */}
-        <ProjectBriefPanel />
+        {/* Right Sidebar for Transcript */}
+        <TranscriptDisplay />
       </div>
 
       {/* Producer Announcements - Bottom Panel */}

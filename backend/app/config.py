@@ -37,13 +37,15 @@ class Settings(BaseSettings):
     # Audio Configuration
     audio_sample_rate: int = 16000
     audio_encoding: str = "pcm_s16le"
+    save_audio_debug: bool = False  # Save audio chunks to file for debugging
+    audio_debug_dir: str = "/tmp/audio_debug"  # Directory to save debug audio files
 
     # Google Cloud Storage
     gcs_bucket_name: str = "ai-agency-demo"
 
-    # Gemini Live WebSocket
+    # Gemini Live WebSocket (Vertex AI)
     gemini_live_ws_url: str = (
-        "wss://generativelanguage.googleapis.com/ws/v1/models/gemini-2.0-flash-exp"
+        "wss://us-central1-aiplatform.googleapis.com/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent"
     )
 
     @property

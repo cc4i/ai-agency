@@ -3,6 +3,7 @@
 import json
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncGenerator
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -11,12 +12,34 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.services.redis_client import redis_client
 
-# Configure logging
-logging.basicConfig(
-    level=getattr(logging, settings.log_level),
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+# Configure logging - both console and file
+log_dir = Path(__file__).parent.parent / "logs"
+log_dir.mkdir(exist_ok=True)
+log_file = log_dir / "backend.log"
+
+# Create formatters
+formatter = logging.Formatter(
+    "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
+
+# Console handler
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(formatter)
+console_handler.setLevel(getattr(logging, settings.log_level))
+
+# File handler - write to backend/logs/backend.log
+file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
+file_handler.setFormatter(formatter)
+file_handler.setLevel(logging.DEBUG)  # Capture everything to file
+
+# Configure root logger
+logging.basicConfig(
+    level=logging.DEBUG,
+    handlers=[console_handler, file_handler]
+)
+
 logger = logging.getLogger(__name__)
+logger.info(f"📝 Logging to file: {log_file}")
 
 
 @asynccontextmanager
@@ -103,9 +126,11 @@ async def gemini_live_websocket(websocket: WebSocket, session_id: str, project_i
     logger.info(f"WebSocket connection request for session: {session_id}, project: {project_id}")
 
     # Create Gemini Live connection
+    # Available voices: Puck, Charon (male), Kore, Aoede (female), Fenrir
     gemini_connection = GeminiLiveConnection(
         session_id=session_id,
-        voice_name="Aoede"  # Professional female voice
+        project_id=project_id,  # Pass project_id for agent integration
+        voice_name="Kore"  # Female voice (alternative: "Aoede")
     )
 
     try:
@@ -253,6 +278,105 @@ async def upload_asset():
         "asset_id": asset_id,
         "url": f"https://storage.googleapis.com/{settings.gcs_bucket_name}/{asset_id}",
         "status": "uploaded"
+    }
+
+
+# Test Endpoints for Agent System
+@app.post("/api/test/trigger-strategy")
+async def test_trigger_strategy(project_id: str = "aura_smart_sneaker"):
+    """Test endpoint to manually trigger Strategy Agent."""
+    from app.services.orchestration import AgentOrchestrator
+
+    logger.info(f"TEST: Manually triggering Strategy Agent for project: {project_id}")
+
+    orchestrator = AgentOrchestrator()
+
+    task = {
+        "task_id": "test_strategy",
+        "product_name": "Aura Smart Sneaker",
+        "product_category": "footwear",
+        "theme": "futuristic urban athlete",
+        "key_features": ["glowing sole", "smart tracking", "adaptive cushioning"],
+        "brand_tone": "innovative, energetic, tech-forward",
+        "target_market": "Urban athletes aged 18-35"
+    }
+
+    try:
+        result = await orchestrator.execute_agent(
+            "strategy",
+            task=task,
+            project_id=project_id,
+            with_critique=False
+        )
+
+        logger.info(f"TEST: Strategy Agent completed successfully")
+        return {
+            "status": "success",
+            "agent": "strategy",
+            "result": result
+        }
+    except Exception as e:
+        logger.error(f"TEST: Strategy Agent failed: {e}")
+        return {
+            "status": "error",
+            "agent": "strategy",
+            "error": str(e)
+        }
+
+
+@app.post("/api/test/trigger-art-director")
+async def test_trigger_art_director(project_id: str = "aura_smart_sneaker"):
+    """Test endpoint to manually trigger Art Director Agent."""
+    from app.services.orchestration import AgentOrchestrator
+
+    logger.info(f"TEST: Manually triggering Art Director Agent for project: {project_id}")
+
+    orchestrator = AgentOrchestrator()
+
+    task = {
+        "task_id": "test_art_director",
+        "product_name": "Aura Smart Sneaker",
+        "product_category": "footwear",
+        "slogan": "Step Into Your Aura",
+        "theme": "futuristic urban athlete",
+        "key_features": ["glowing sole", "smart tracking", "adaptive cushioning"],
+        "brand_tone": "innovative, energetic, tech-forward"
+    }
+
+    try:
+        result = await orchestrator.execute_agent(
+            "art_director",
+            task=task,
+            project_id=project_id,
+            with_critique=False
+        )
+
+        logger.info(f"TEST: Art Director Agent completed successfully")
+        return {
+            "status": "success",
+            "agent": "art_director",
+            "result": result
+        }
+    except Exception as e:
+        logger.error(f"TEST: Art Director Agent failed: {e}")
+        return {
+            "status": "error",
+            "agent": "art_director",
+            "error": str(e)
+        }
+
+
+@app.get("/api/test/list-agents")
+async def test_list_agents():
+    """Test endpoint to list all registered agents."""
+    from app.services.agent_registry import agent_registry
+
+    agents = agent_registry.list_agents()
+
+    return {
+        "status": "success",
+        "agents": agents,
+        "count": len(agents)
     }
 
 

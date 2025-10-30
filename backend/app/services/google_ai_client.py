@@ -16,24 +16,24 @@ import logging
 from typing import Any, Dict, List, Optional
 import asyncio
 
-import google.generativeai as genai
-from google.cloud import aiplatform
-from google.cloud.aiplatform import ImageGenerationModel, VideoGenerationModel
-import vertexai
+from google import genai
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Initialize Google AI services
-genai.configure(api_key=settings.gemini_api_key)
-
-# Initialize Vertex AI for Imagen/Veo/Lyria
+# Initialize Google Genai client with Vertex AI
+# Supports: Text, Vision, Live API, Image generation, Video generation
 try:
-    vertexai.init(project=settings.google_cloud_project, location=settings.google_cloud_location)
-    logger.info(f"Vertex AI initialized for project: {settings.google_cloud_project}")
+    genai_client = genai.Client(
+        vertexai=True,
+        project=settings.google_cloud_project,
+        location=settings.google_cloud_location,
+    )
+    logger.info(f"Google GenAI client initialized with Vertex AI (project: {settings.google_cloud_project}, location: {settings.google_cloud_location})")
 except Exception as e:
-    logger.warning(f"Vertex AI initialization failed: {e}. Image/Video/Audio generation may not work.")
+    logger.warning(f"GenAI client initialization failed: {e}")
+    genai_client = None
 
 
 class GeminiLiveClient:
@@ -74,7 +74,7 @@ class GeminiLiveClient:
             # Send initial setup message
             setup_message = {
                 "setup": {
-                    "model": "models/gemini-2.0-flash-exp",
+                    "model": "models/gemini-live-2.5-flash-preview-native-audio-09-2025",
                     "generation_config": {
                         "response_modalities": ["AUDIO"],
                         "speech_config": {
@@ -219,12 +219,12 @@ class GeminiLiveClient:
 
 
 class GeminiProClient:
-    """Client for Gemini Pro text generation API."""
+    """Client for Gemini Pro text generation API using new google.genai SDK."""
 
     def __init__(self):
         """Initialize Gemini Pro client."""
-        self.api_key = settings.gemini_api_key
-        self.model = genai.GenerativeModel('gemini-pro')
+        self.client = genai_client
+        self.model_name = "gemini-2.5-flash"
 
     async def generate_content(
         self, prompt: str, system_prompt: Optional[str] = None
@@ -240,29 +240,29 @@ class GeminiProClient:
             Generated text
         """
         try:
+            if not self.client:
+                raise RuntimeError("GenAI client not initialized")
+
             logger.info(f"Gemini Pro: Generating content for prompt: {prompt[:50]}...")
 
-            # Configure generation parameters
-            generation_config = {
+            # Build config
+            config = {
                 'temperature': 0.7,
                 'top_p': 0.95,
                 'top_k': 40,
                 'max_output_tokens': 2048,
             }
 
-            # Build full prompt with system instructions if provided
-            full_prompt = prompt
+            # Build contents with system instruction if provided
+            contents = prompt
             if system_prompt:
-                full_prompt = f"{system_prompt}\n\n{prompt}"
+                config['system_instruction'] = system_prompt
 
-            # Generate content asynchronously
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,
-                lambda: self.model.generate_content(
-                    full_prompt,
-                    generation_config=generation_config
-                )
+            # Generate content using new SDK
+            response = await self.client.aio.models.generate_content(
+                model=self.model_name,
+                contents=contents,
+                config=config
             )
 
             result = response.text
@@ -275,12 +275,12 @@ class GeminiProClient:
 
 
 class GeminiProVisionClient:
-    """Client for Gemini Pro Vision API (image analysis)."""
+    """Client for Gemini Pro Vision API using new google.genai SDK."""
 
     def __init__(self):
         """Initialize Gemini Pro Vision client."""
-        self.api_key = settings.gemini_api_key
-        self.model = genai.GenerativeModel('gemini-pro-vision')
+        self.client = genai_client
+        self.model_name = "gemini-2.5-flash"  # Supports vision
 
     async def analyze_image(self, image_url: str, prompt: str) -> str:
         """
@@ -294,6 +294,9 @@ class GeminiProVisionClient:
             Analysis result
         """
         try:
+            if not self.client:
+                raise RuntimeError("GenAI client not initialized")
+
             logger.info(f"Gemini Pro Vision: Analyzing image: {image_url}")
 
             # Download image
@@ -303,27 +306,30 @@ class GeminiProVisionClient:
                 image_response.raise_for_status()
                 image_data = image_response.content
 
-            # Prepare image part
-            import PIL.Image
-            import io
-            image = PIL.Image.open(io.BytesIO(image_data))
+            # Encode image as base64
+            import base64
+            image_b64 = base64.b64encode(image_data).decode('utf-8')
 
             # Configure generation
-            generation_config = {
+            config = {
                 'temperature': 0.4,
                 'top_p': 0.95,
                 'top_k': 32,
                 'max_output_tokens': 1024,
             }
 
-            # Analyze image asynchronously
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,
-                lambda: self.model.generate_content(
-                    [prompt, image],
-                    generation_config=generation_config
-                )
+            # Build contents with image
+            from google.genai.types import Part
+            contents = [
+                Part(text=prompt),
+                Part(inline_data={'mime_type': 'image/jpeg', 'data': image_b64})
+            ]
+
+            # Analyze image using new SDK
+            response = await self.client.aio.models.generate_content(
+                model=self.model_name,
+                contents=contents,
+                config=config
             )
 
             result = response.text
@@ -336,12 +342,12 @@ class GeminiProVisionClient:
 
 
 class ImagenClient:
-    """Client for Imagen image generation API."""
+    """Client for Imagen image generation API using google.genai."""
 
     def __init__(self):
         """Initialize Imagen client."""
-        self.project_id = settings.google_cloud_project
-        self.location = settings.google_cloud_location
+        self.client = genai_client
+        self.model_name = "imagen-3.0-generate-001"
 
     async def generate_images(
         self,
@@ -350,7 +356,7 @@ class ImagenClient:
         aspect_ratio: str = "16:9",
     ) -> List[bytes]:
         """
-        Generate images using Imagen.
+        Generate images using Imagen 3.
 
         Args:
             prompt: Image generation prompt
@@ -361,34 +367,31 @@ class ImagenClient:
             List of generated images as bytes
         """
         try:
+            if not self.client:
+                raise RuntimeError("GenAI client not initialized")
+
             logger.info(f"Imagen: Generating {number_of_images} images with prompt: {prompt[:50]}...")
 
-            # Load Imagen model
-            model = ImageGenerationModel.from_pretrained("imagegeneration@006")
+            images = []
+            for i in range(number_of_images):
+                # Generate image using genai SDK
+                response = await self.client.aio.models.generate_images(
+                    model=self.model_name,
+                    prompt=prompt,
+                    config={
+                        "number_of_images": 1,
+                        "aspect_ratio": aspect_ratio,
+                        "safety_filter_level": "block_some",
+                        "person_generation": "allow_adult",
+                    }
+                )
 
-            # Generate images asynchronously
-            loop = asyncio.get_event_loop()
+                # Extract image bytes
+                if response.images:
+                    image_bytes = response.images[0].image.data
+                    images.append(image_bytes)
+                    logger.info(f"Imagen: Generated image {i+1}/{number_of_images}")
 
-            async def generate_batch():
-                images = []
-                for i in range(number_of_images):
-                    response = await loop.run_in_executor(
-                        None,
-                        lambda: model.generate_images(
-                            prompt=prompt,
-                            number_of_images=1,
-                            aspect_ratio=aspect_ratio,
-                            safety_filter_level="block_some",
-                            person_generation="allow_adult",
-                        )
-                    )
-                    # Get the image bytes
-                    if response.images:
-                        images.append(response.images[0]._image_bytes)
-                        logger.info(f"Imagen: Generated image {i+1}/{number_of_images}")
-                return images
-
-            images = await generate_batch()
             logger.info(f"Imagen: Successfully generated {len(images)} images")
             return images
 
@@ -398,65 +401,67 @@ class ImagenClient:
 
 
 class VeoClient:
-    """Client for Veo video generation API."""
+    """Client for Veo video generation API using google.genai."""
 
     def __init__(self):
         """Initialize Veo client."""
-        self.project_id = settings.google_cloud_project
-        self.location = settings.google_cloud_location
+        self.client = genai_client
+        self.model_name = "veo-002"
 
     async def generate_video(
         self,
         prompt: str,
         reference_image: Optional[str] = None,
-        duration_seconds: int = 15,
+        duration_seconds: int = 8,
     ) -> bytes:
         """
-        Generate video using Veo.
+        Generate video using Veo 2.
 
         Args:
             prompt: Video generation prompt
             reference_image: Optional reference image URL
-            duration_seconds: Video duration (max 10s for Veo 2)
+            duration_seconds: Video duration (max 8s for Veo 2)
 
         Returns:
             Generated video as bytes
         """
         try:
+            if not self.client:
+                raise RuntimeError("GenAI client not initialized")
+
             logger.info(f"Veo: Generating {duration_seconds}s video with prompt: {prompt[:50]}...")
 
-            # Load Veo model
-            model = VideoGenerationModel.from_pretrained("veo-002")
-
-            # Prepare parameters
-            generate_params = {
-                "prompt": prompt,
+            # Build config
+            config = {
                 "aspect_ratio": "16:9",
+                "duration_seconds": duration_seconds,
             }
 
             # Add reference image if provided
             if reference_image:
                 # Download reference image
                 import httpx
-                async with httpx.AsyncClient() as client:
-                    img_response = await client.get(reference_image)
+                async with httpx.AsyncClient() as http_client:
+                    img_response = await http_client.get(reference_image)
                     img_response.raise_for_status()
                     img_data = img_response.content
 
-                import PIL.Image
-                import io
-                image = PIL.Image.open(io.BytesIO(img_data))
-                generate_params["input_image"] = image
+                # Encode as base64
+                img_b64 = base64.b64encode(img_data).decode('utf-8')
+                config["reference_image"] = {
+                    "mime_type": "image/jpeg",
+                    "data": img_b64
+                }
 
-            # Generate video asynchronously
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,
-                lambda: model.generate_videos(**generate_params)
+            # Generate video using genai SDK
+            response = await self.client.aio.models.generate_video(
+                model=self.model_name,
+                prompt=prompt,
+                config=config
             )
 
-            # Get the video bytes
-            video_bytes = response.videos[0]._video_bytes if response.videos else b""
+            # Extract video bytes
+            video_bytes = response.video.data if response.video else b""
             logger.info(f"Veo: Successfully generated video ({len(video_bytes)} bytes)")
             return video_bytes
 
@@ -489,22 +494,17 @@ class LyriaClient:
         try:
             logger.info(f"Lyria: Generating {duration_seconds}s music with prompt: {prompt[:50]}...")
 
-            # Note: MusicLM/Lyria API may not be publicly available
-            # Using placeholder implementation that would work when API is available
-            from google.cloud import aiplatform
-
-            # Load music generation model when available
-            # For now, return a note that this needs actual API access
+            # Note: MusicLM/Lyria API not yet publicly available via genai SDK
+            # Placeholder implementation for when API becomes available
             logger.warning("Lyria/MusicLM API not yet publicly available. Returning placeholder.")
 
-            # This would be the actual implementation:
-            # model = aiplatform.Model("publishers/google/models/lyria-music-generation")
-            # response = await loop.run_in_executor(
-            #     None,
-            #     lambda: model.predict(
-            #         instances=[{"prompt": prompt, "duration": duration_seconds}]
-            #     )
+            # Future implementation would use genai client:
+            # response = await self.client.aio.models.generate_audio(
+            #     model="lyria-music-generation",
+            #     prompt=prompt,
+            #     config={"duration_seconds": duration_seconds}
             # )
+            # return response.audio.data
 
             # Return empty audio bytes for now
             return b""
@@ -642,12 +642,12 @@ class ChirpClient:
 
 
 class GeminiCodeAssistClient:
-    """Client for Gemini Code Assist API (using Gemini Pro for code generation)."""
+    """Client for Gemini Code Assist API using new google.genai SDK."""
 
     def __init__(self):
         """Initialize Code Assist client."""
-        self.api_key = settings.gemini_api_key
-        self.model = genai.GenerativeModel('gemini-pro')
+        self.client = genai_client
+        self.model_name = "gemini-2.5-flash"
 
     async def generate_code(
         self, prompt: str, language: str = "html"
@@ -663,6 +663,9 @@ class GeminiCodeAssistClient:
             Generated code
         """
         try:
+            if not self.client:
+                raise RuntimeError("GenAI client not initialized")
+
             logger.info(f"Code Assist: Generating {language} code")
 
             # Create code-focused system prompt
@@ -675,25 +678,20 @@ Follow these guidelines:
 - Make it visually appealing and professional
 """
 
-            # Build full prompt
-            full_prompt = f"{system_prompt}\n\n{prompt}"
-
             # Configure for code generation
-            generation_config = {
+            config = {
                 'temperature': 0.3,  # Lower temperature for more deterministic code
                 'top_p': 0.95,
                 'top_k': 40,
                 'max_output_tokens': 4096,  # Allow longer code outputs
+                'system_instruction': system_prompt
             }
 
-            # Generate code asynchronously
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,
-                lambda: self.model.generate_content(
-                    full_prompt,
-                    generation_config=generation_config
-                )
+            # Generate code using new SDK
+            response = await self.client.aio.models.generate_content(
+                model=self.model_name,
+                contents=prompt,
+                config=config
             )
 
             code = response.text

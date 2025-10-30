@@ -10,6 +10,7 @@
  */
 
 import { create } from 'zustand';
+import { ConversationMessage } from '@/types/brief';
 
 export interface ProjectBrief {
   project_id: string;
@@ -54,6 +55,7 @@ interface ProjectState {
   assets: Record<string, Asset[]>;
   agentStatuses: Record<string, AgentStatus>;
   announcements: ProducerAnnouncement[];
+  transcript: ConversationMessage[];
   changedFields: string[];
 
   // Audio state
@@ -68,6 +70,7 @@ interface ProjectState {
   addAsset: (agentId: string, asset: Asset) => void;
   updateAgentStatus: (agentId: string, status: AgentStatus) => void;
   addAnnouncement: (announcement: ProducerAnnouncement) => void;
+  addTranscriptMessage: (message: ConversationMessage) => void;
   clearChangedFields: () => void;
 
   setConnected: (connected: boolean) => void;
@@ -83,6 +86,7 @@ const initialState = {
   assets: {},
   agentStatuses: {},
   announcements: [],
+  transcript: [],
   changedFields: [],
   isConnected: false,
   isMicrophoneActive: false,
@@ -120,6 +124,11 @@ export const useProjectStore = create<ProjectState>((set) => ({
   addAnnouncement: (announcement) =>
     set((state) => ({
       announcements: [...state.announcements, announcement],
+    })),
+
+  addTranscriptMessage: (message) =>
+    set((state) => ({
+      transcript: [...state.transcript, message],
     })),
 
   clearChangedFields: () => set({ changedFields: [] }),

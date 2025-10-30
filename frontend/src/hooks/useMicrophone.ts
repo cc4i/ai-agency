@@ -13,14 +13,22 @@ import { useProjectStore } from '@/stores/useProjectStore';
 
 interface UseMicrophoneOptions {
   onAudioData: (data: ArrayBuffer) => void;
+  onTurnComplete?: () => void; // Called after silence duration
   chunkDuration?: number; // milliseconds
   sampleRate?: number;
+  vadThreshold?: number; // Voice Activity Detection threshold (0-1)
+  vadEnabled?: boolean; // Enable/disable VAD
+  silenceDuration?: number; // ms of silence before turn complete (default 1500ms)
 }
 
 export function useMicrophone({
   onAudioData,
+  onTurnComplete,
   chunkDuration = 100,
-  sampleRate = 16000,
+  sampleRate = 16000, // Gemini Live API requires 16kHz input (outputs 24kHz)
+  vadThreshold = 0.01, // Lower threshold - let Gemini's VAD handle it
+  vadEnabled = false, // Disable frontend VAD - let Gemini handle it
+  silenceDuration = 1500, // Not used when VAD disabled
 }: UseMicrophoneOptions) {
   const [isRecording, setIsRecording] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -30,7 +38,7 @@ export function useMicrophone({
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationFrameRef = useRef<number>();
 
-  const { setMicrophoneActive, setAudioLevel } = useProjectStore();
+  const { setMicrophoneActive, setAudioLevel, producerSpeaking } = useProjectStore();
 
   const monitorAudioLevel = useCallback(() => {
     if (!analyserRef.current) return;
@@ -80,11 +88,19 @@ export function useMicrophone({
       // Create ScriptProcessor to capture raw PCM audio
       // Note: ScriptProcessor is deprecated but widely supported
       // For production, consider using AudioWorklet
-      const bufferSize = 4096;
+      const bufferSize = 4096; // Larger chunks for better quality and smoother streaming (~256ms at 16kHz)
       const processor = audioContextRef.current.createScriptProcessor(bufferSize, 1, 1);
 
       processor.onaudioprocess = (e) => {
         const inputData = e.inputBuffer.getChannelData(0);
+
+        // Turn-taking: Don't send audio if Gemini is speaking
+        const currentProducerSpeaking = useProjectStore.getState().producerSpeaking;
+        if (currentProducerSpeaking) {
+          // Gemini is speaking, don't interrupt
+          console.log('[Turn-Taking] Gemini speaking, pausing user audio');
+          return;
+        }
 
         // Convert Float32Array to Int16Array (PCM16)
         const pcm16 = new Int16Array(inputData.length);
@@ -94,7 +110,7 @@ export function useMicrophone({
           pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
         }
 
-        // Send PCM16 data as ArrayBuffer
+        // Send ALL audio (including silence) - let Gemini's VAD handle detection
         onAudioData(pcm16.buffer);
       };
 
