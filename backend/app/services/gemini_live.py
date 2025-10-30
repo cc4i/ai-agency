@@ -313,6 +313,7 @@ class GeminiLiveConnection:
         config = LiveConnectConfig(
             response_modalities=["AUDIO"], # Text is enabled via output_audio_transcription
             output_audio_transcription={},
+            input_audio_transcription={},
             speech_config=SpeechConfig(
                 voice_config=VoiceConfig(
                     prebuilt_voice_config=PrebuiltVoiceConfig(
@@ -573,20 +574,15 @@ class GeminiLiveConnection:
                             if hasattr(response.server_content, 'output_transcription') and response.server_content.output_transcription:
                                 transcript_text = response.server_content.output_transcription.text
                                 if transcript_text:
-                                    self._log("info", f"📝 Transcript received: {transcript_text}")
+                                    self._log("info", f"📝 Assistant Transcript: {transcript_text}")
                                     await self._send_text_to_frontend(transcript_text, "assistant")
-                                    # Save to conversation history
-                                    from datetime import datetime, timezone
-                                    message = ConversationMessage(
-                                        role="assistant",
-                                        text=transcript_text,
-                                        timestamp=datetime.now(timezone.utc)
-                                    )
-                                    self.conversation_history.append(message)
 
-                                    # Callback
-                                    if self.on_text_received:
-                                        self.on_text_received("assistant", transcript_text)
+                            # Extract user's input transcript
+                            if hasattr(response.server_content, 'input_transcription') and response.server_content.input_transcription:
+                                transcript_text = response.server_content.input_transcription.text
+                                if transcript_text:
+                                    self._log("info", f"📝 User Transcript: {transcript_text}")
+                                    await self._send_text_to_frontend(transcript_text, "user")
 
                             # Handle interrupted state
                             if hasattr(response.server_content, 'interrupted') and response.server_content.interrupted:
@@ -669,6 +665,28 @@ class GeminiLiveConnection:
         except Exception as e:
             logger.error(f"Error sending text to frontend: {e}")
 
+    async def _send_announcement_to_frontend(self, message: str, type: str = "info") -> None:
+        """
+        Send a status announcement to the frontend.
+
+        Args:
+            message: The announcement message content.
+            type: The type of announcement (e.g., 'info', 'success', 'error').
+        """
+        if not self.frontend_ws:
+            return
+
+        try:
+            await self.frontend_ws.send_json({
+                "type": "producer_announcement",
+                "data": {
+                    "message": message,
+                    "announcement_type": type,
+                },
+            })
+        except Exception as e:
+            logger.error(f"Error sending announcement to frontend: {e}")
+
     async def _handle_tool_call_genai(self, tool_call: Any) -> None:
         """
         Handle tool call from genai SDK - execute agent and send response.
@@ -676,6 +694,10 @@ class GeminiLiveConnection:
         Args:
             tool_call: Tool call object from genai SDK
         """
+        await self._send_announcement_to_frontend(
+            message="Tool call received from Gemini. Routing to the appropriate agent...",
+            type="info"
+        )
         try:
             # Extract function calls from genai SDK format
             function_calls = []
@@ -757,6 +779,7 @@ class GeminiLiveConnection:
         Returns:
             Agent execution result
         """
+        await self._send_announcement_to_frontend(f"Routing to agent for function: {function_name}...", type="info")
         from app.services.orchestration import AgentOrchestrator
 
         orchestrator = AgentOrchestrator()
@@ -781,6 +804,7 @@ class GeminiLiveConnection:
                     task=task,
                     project_id=self.project_id,
                     with_critique=False,
+                    announcement_callback=self._send_announcement_to_frontend,
                 )
 
                 self._log("info", f"✓ Strategy Agent completed")
@@ -818,6 +842,7 @@ class GeminiLiveConnection:
                     task=task,
                     project_id=self.project_id,
                     with_critique=False,
+                    announcement_callback=self._send_announcement_to_frontend,
                 )
 
                 self._log("info", f"✓ Art Director Agent completed")

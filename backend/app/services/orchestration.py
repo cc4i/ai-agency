@@ -58,6 +58,7 @@ class AgentOrchestrator:
         task: Dict[str, Any],
         project_id: str,
         with_critique: bool = False,
+        announcement_callback: Optional[Callable] = None,
     ) -> Dict[str, Any]:
         """
         Execute a single agent with optional critique loop.
@@ -67,6 +68,7 @@ class AgentOrchestrator:
             task: Task parameters
             project_id: Project identifier
             with_critique: Whether to run critique loop
+            announcement_callback: Async function to send announcements to the frontend.
 
         Returns:
             Agent output
@@ -77,8 +79,10 @@ class AgentOrchestrator:
 
         logger.info(f"Executing agent: {agent_id} for project: {project_id}")
 
-        # Update agent status
+        # Update agent status and announce start
         await redis_client.set_agent_status(agent_id, "working")
+        if announcement_callback:
+            await announcement_callback(f"🤖 Agent '{agent.name}' is starting its task...", "info")
 
         try:
             # Get project brief for context
@@ -100,8 +104,10 @@ class AgentOrchestrator:
             task_id = task.get("task_id", f"{agent_id}_{project_id}")
             await redis_client.store_agent_result(agent_id, task_id, result)
 
-            # Update status
+            # Update status and announce completion
             await redis_client.set_agent_status(agent_id, "completed")
+            if announcement_callback:
+                await announcement_callback(f"✅ Agent '{agent.name}' has completed its task.", "success")
 
             # Publish completion event
             await redis_client.publish_event(
@@ -120,6 +126,8 @@ class AgentOrchestrator:
         except Exception as e:
             logger.error(f"Agent {agent_id} failed: {e}")
             await redis_client.set_agent_status(agent_id, "failed")
+            if announcement_callback:
+                await announcement_callback(f"❌ Agent '{agent.name}' failed: {e}", "error")
             raise
 
     async def execute_parallel_agents(
