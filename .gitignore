@@ -47,6 +47,9 @@ build/
 *.log
 logs/
 
+# Audio debug recordings
+backend/audio_recordings/
+
 # Next.js
 frontend/.next/
 frontend/out/
