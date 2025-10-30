@@ -46,11 +46,13 @@ from google.genai.types import (
     AutomaticActivityDetection,
     StartSensitivity,
     EndSensitivity,
+    SessionResumptionConfig,
 )
 from fastapi import WebSocket
 
 from app.config import settings
 from app.models.brief import ConversationMessage
+from app.services.redis_client import redis_client # Import redis_client
 
 logger = logging.getLogger(__name__)
 logger.info("✓ WebSocket library patched with extended timeouts (ping: 60s, timeout: 120s)")
@@ -79,7 +81,7 @@ class GeminiLiveConnection:
         session_id: str,
         project_id: str = "aura_smart_sneaker",
         system_prompt: Optional[str] = None,
-        voice_name: str = "Kore",  # Options: Puck, Charon, Kore, Fenrir, Aoede
+        voice_name: str = "Aoede",  # Options: Puck, Charon, Kore, Fenrir, Aoede
     ):
         """
         Initialize Gemini Live connection.
@@ -97,6 +99,7 @@ class GeminiLiveConnection:
 
         self.frontend_ws: Optional[WebSocket] = None
         self.gemini_session: Optional[Any] = None
+        self._session_handle: Optional[str] = None  # Track session handle for resumption
 
         # Initialize genai client with Vertex AI
         # Configure with extended timeout and keepalive for live streaming
@@ -142,6 +145,9 @@ class GeminiLiveConnection:
         self.on_text_received: Optional[Callable[[str, str], None]] = None
         self.on_turn_complete: Optional[Callable[[], None]] = None
 
+        # Result listener for async agent tasks
+        self._result_listener_task: Optional[asyncio.Task] = None
+
     def _log(self, level: str, message: str) -> None:
         """Log with session context."""
         prefix = f"[Session: {self.session_id[:8]}...] [Turn: {self.turn_count}]"
@@ -164,22 +170,22 @@ class GeminiLiveConnection:
         """
         return [
             {
-                "name": "create_campaign_strategy",
-                "description": "Task the Strategy Agent to create campaign personas, slogans, and positioning. Call this when the user wants to create a marketing campaign.",
+                "name": "update_project_brief",
+                "description": "Update the project brief with information learned from the conversation. Call this IMMEDIATELY when you learn product details from the user (name, category, theme, features, target market, etc.). This keeps the brief in sync with the conversation.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "product_name": {
                             "type": "string",
-                            "description": "Name of the product"
+                            "description": "Product name if mentioned"
                         },
                         "product_category": {
                             "type": "string",
-                            "description": "Product category (footwear, beverage, electronics, etc.)"
+                            "description": "Product category (footwear, beverage, electronics, toy, fashion, beauty, automotive, food, etc.)"
                         },
                         "theme": {
                             "type": "string",
-                            "description": "Campaign theme or concept"
+                            "description": "Campaign theme or visual concept"
                         },
                         "key_features": {
                             "type": "array",
@@ -188,40 +194,184 @@ class GeminiLiveConnection:
                         },
                         "brand_tone": {
                             "type": "string",
-                            "description": "Brand tone (futuristic, luxury, energetic, etc.)"
+                            "description": "Brand tone (futuristic, luxury, playful, edgy, professional, energetic, etc.)"
                         },
                         "target_market": {
                             "type": "string",
                             "description": "Target market description"
                         }
                     },
-                    "required": ["product_name", "product_category"]
+                    "required": []
+                }
+            },
+            {
+                "name": "create_campaign_strategy",
+                "description": "Task the Strategy Agent to create campaign personas, slogans, and market positioning. Call this when the user explicitly requests strategy/personas/slogans. You can call this even if you don't have all the details - missing fields will be pulled from the project brief.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "product_name": {
+                            "type": "string",
+                            "description": "Name of the product (optional - will use project brief if not provided)"
+                        },
+                        "product_category": {
+                            "type": "string",
+                            "description": "Product category (optional - will use project brief if not provided)"
+                        },
+                        "theme": {
+                            "type": "string",
+                            "description": "Campaign theme or concept (optional)"
+                        },
+                        "key_features": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Key product features to highlight (optional)"
+                        },
+                        "brand_tone": {
+                            "type": "string",
+                            "description": "Brand tone (optional)"
+                        },
+                        "target_market": {
+                            "type": "string",
+                            "description": "Target market description (optional)"
+                        }
+                    },
+                    "required": []
                 }
             },
             {
                 "name": "generate_hero_images",
-                "description": "Task the Art Director Agent to create hero images for the campaign. Call this after a slogan has been selected.",
+                "description": "Task the Art Director Agent to create hero images for the campaign. Call this ONLY when: (1) The Strategy Agent has completed and generated slogans, AND (2) The user has explicitly SELECTED one slogan, AND (3) The user requests images/visuals to be created. Do NOT call automatically - wait for user to choose a slogan and request images.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "slogan": {
                             "type": "string",
-                            "description": "The selected campaign slogan"
+                            "description": "The selected campaign slogan chosen by the user"
                         },
                         "product_name": {
                             "type": "string",
-                            "description": "Name of the product"
+                            "description": "Name of the product from the brief"
+                        },
+                        "product_category": {
+                            "type": "string",
+                            "description": "Product category (footwear, beverage, electronics, etc.)"
                         },
                         "theme": {
                             "type": "string",
-                            "description": "Visual theme"
+                            "description": "Visual theme from the brief"
                         },
                         "brand_tone": {
                             "type": "string",
-                            "description": "Brand tone"
+                            "description": "Brand tone from the brief"
+                        },
+                        "key_features": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Key product features to highlight in images"
                         }
                     },
                     "required": ["slogan", "product_name"]
+                }
+            },
+            {
+                "name": "generate_social_video",
+                "description": "Task the Video Producer Agent to create a 15-second social media video clip. Call this ONLY when: (1) Hero images have been generated by the Art Director, AND (2) User has selected one image, AND (3) User requests a video to be created. Do NOT call automatically - wait for user to select an image and request video.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "image_asset_id": {
+                            "type": "string",
+                            "description": "The asset_id of the selected hero image to use for video generation"
+                        },
+                        "product_name": {
+                            "type": "string",
+                            "description": "Name of the product from the brief"
+                        },
+                        "theme": {
+                            "type": "string",
+                            "description": "Visual theme from the brief"
+                        },
+                        "key_features": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Key product features to highlight in the video"
+                        },
+                        "slogan": {
+                            "type": "string",
+                            "description": "The selected campaign slogan"
+                        }
+                    },
+                    "required": ["image_asset_id", "product_name"]
+                }
+            },
+            {
+                "name": "generate_audio_assets",
+                "description": "Task the Audio Team Agent to create audio assets (jingle, podcast ad, voiceover). Call this when user requests audio content or music for the campaign. Can be called after strategy is complete.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "product_name": {
+                            "type": "string",
+                            "description": "Name of the product from the brief"
+                        },
+                        "slogan": {
+                            "type": "string",
+                            "description": "The selected campaign slogan"
+                        },
+                        "theme": {
+                            "type": "string",
+                            "description": "Campaign theme from the brief"
+                        },
+                        "brand_tone": {
+                            "type": "string",
+                            "description": "Brand tone from the brief"
+                        },
+                        "product_category": {
+                            "type": "string",
+                            "description": "Product category"
+                        }
+                    },
+                    "required": ["product_name", "theme"]
+                }
+            },
+            {
+                "name": "generate_landing_page",
+                "description": "Task the Web Dev Agent to create a landing page with HTML/CSS/JS code. Call this ONLY when: (1) Hero images exist, AND (2) User has selected an image, AND (3) User requests a landing page or website. The page will feature the selected hero image and slogan.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "image_asset_id": {
+                            "type": "string",
+                            "description": "The asset_id of the selected hero image to feature on the landing page"
+                        },
+                        "product_name": {
+                            "type": "string",
+                            "description": "Name of the product from the brief"
+                        },
+                        "slogan": {
+                            "type": "string",
+                            "description": "The selected campaign slogan"
+                        },
+                        "theme": {
+                            "type": "string",
+                            "description": "Visual theme from the brief"
+                        },
+                        "brand_tone": {
+                            "type": "string",
+                            "description": "Brand tone from the brief"
+                        },
+                        "product_category": {
+                            "type": "string",
+                            "description": "Product category"
+                        },
+                        "key_features": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Key product features to highlight"
+                        }
+                    },
+                    "required": ["image_asset_id", "product_name", "slogan"]
                 }
             }
         ]
@@ -237,31 +387,135 @@ class GeminiLiveConnection:
         You are the Executive Producer of a creative AI agency engaging in a multi-turn conversation with the Creative Director (user).
 
         Your role is to:
-        1. Present clear, professional plans to the Creative Director
-        2. Delegate tasks to specialist agents (Strategy, Art Director, Video, Audio, Web Dev)
+        1. CONTINUOUSLY UPDATE the Project Brief as you learn information from the conversation
+        2. Delegate tasks to specialist agents ONLY when the user requests them
         3. Provide status updates as agents work
-        4. Evaluate agent outputs and request revisions when needed
-        5. Explain your reasoning when critiquing work
-        6. Continue the conversation across multiple turns, maintaining context
+        4. Evaluate agent outputs and present them to the user
+        5. Guide the conversation through campaign creation
 
-        Tone: Professional, collaborative, explanatory
-        Voice: First-person ("I've tasked...", "I'm analyzing...")
-        Style: Announce actions before performing them, explain agent roles
+        CRITICAL WORKFLOW - FOLLOW THIS ORDER:
 
-        Important:
-        - This is a continuous conversation. Respond to each user input naturally.
-        - When the user wants to create a campaign, use the create_campaign_strategy function.
-        - When they select a slogan, use the generate_hero_images function.
-        - Always listen for and respond to new user inputs throughout the conversation.
+        PHASE 1: GATHER INFORMATION (Use update_project_brief)
+        - As the user talks, IMMEDIATELY call update_project_brief() when you learn ANY detail
+        - Update fields: product_name, product_category, theme, key_features, brand_tone, target_market
+        - Call it multiple times as conversation progresses
+        - Example: User says "eco-friendly water bottle for athletes"
+          → CALL update_project_brief(product_name="eco-friendly water bottle", product_category="beverage", target_market="athletes")
 
-        Example dialogue:
-        - "Welcome. I'm your Executive Producer. Let me task our Strategy team to analyze your product."
-        - "Great! I'm calling our Strategy Agent now to create campaign options."
-        - "Excellent choice. Now I'm sending this slogan to our Art Director Agent to create visuals."
-        - "I'm analyzing the images against our brief. The theme is strong!"
+        PHASE 2: CREATE STRATEGY (Use create_campaign_strategy)
+        - Call this IMMEDIATELY when user explicitly asks for slogans/personas/strategy
+        - User says "create slogans", "make some slogans", "generate personas" → CALL IT NOW
+        - Don't worry about missing fields - they'll be pulled from the project brief
+        - Examples:
+          User: "can you create some campaign slogans?" → CALL create_campaign_strategy() immediately
+          User: "make some personas" → CALL create_campaign_strategy() immediately
+          User: "I need strategy" → CALL create_campaign_strategy() immediately
 
-        Always be conversational, professional, and ready to continue the dialogue.
+        PHASE 3: CREATE VISUALS (Use generate_hero_images)
+        - ONLY call when ALL of these are true:
+          1. Strategy Agent has completed and you have slogans
+          2. User has EXPLICITLY CHOSEN one slogan (e.g., "I like #3", "Use the first one", "Go with the second slogan")
+          3. User REQUESTS images/visuals (e.g., "create images", "generate visuals", "show me what it looks like")
+        - Do NOT call until user selects AND requests
+        - Examples:
+          User: "I like slogan #3" → DON'T call yet, ask if they want to see images
+          User: "I like slogan #3, can you create images for it?" → NOW call generate_hero_images(slogan="...", ...)
+          User: "Use the second one and show me visuals" → NOW call generate_hero_images(slogan="...", ...)
+
+        PHASE 4: CREATE VIDEO (Use generate_social_video)
+        - ONLY call when ALL of these are true:
+          1. Art Director has completed and you have hero images
+          2. User has EXPLICITLY CHOSEN one image (e.g., "I like image #2", "Use the first image", "Go with image 3")
+          3. User REQUESTS a video (e.g., "create a video", "make a video from this", "generate video")
+        - Do NOT call until user selects an image AND requests video
+        - You need the image_asset_id from the selected image
+        - Examples:
+          User: "I like image #2" → DON'T call yet, ask if they want a video
+          User: "I like image #2, can you create a video from it?" → NOW call generate_social_video(image_asset_id="img_...", ...)
+          User: "Use image 3 and make a video" → NOW call generate_social_video(image_asset_id="img_...", ...)
+
+        Tone: Professional, collaborative, action-oriented
+        Voice: First-person ("I'm updating the brief...", "I've called our Strategy team...")
+        Style: Announce what you're doing as you do it
+
+        Important Rules:
+        - Agent functions execute in the BACKGROUND - keep talking while they work
+        - update_project_brief: Call it OFTEN as you learn information
+        - create_campaign_strategy: Call it ONLY when user requests personas/slogans
+        - generate_hero_images: Call it ONLY after user selects a slogan AND requests images
+        - generate_social_video: Call it ONLY after user selects an image AND requests video
+        - generate_audio_assets: Call it when user requests audio/music (jingle, podcast ad, voiceover)
+        - generate_landing_page: Call it ONLY after user selects an image AND requests a website/landing page
+        - Always respond naturally to user - don't wait silently
+
+        Example conversation:
+        User: "I want to create a campaign for smart sneakers"
+        You: "Fantastic! Let me update our project brief with that. [CALL update_project_brief(product_name="smart sneakers", product_category="footwear")] Tell me more - what's the target audience?"
+
+        User: "Urban runners who like technology"
+        You: "Perfect! Updating that now. [CALL update_project_brief(target_market="urban runners who like technology")] What key features should we highlight?"
+
+        User: "Can you create some campaign slogans?"
+        You: "Absolutely! I'm calling our Strategy Agent now. [CALL create_campaign_strategy(...)] They'll create personas and slogans - should take a moment..."
+        [Strategy Agent completes and returns 5 slogans]
+        You: "Great news! Our Strategy Agent has created 5 campaign slogans: [presents slogans]. Which one resonates with you?"
+
+        User: "I like number 3"
+        You: "Excellent choice! Would you like me to call our Art Director to create hero images based on that slogan?"
+
+        User: "Yes, create the images"
+        You: "Perfect! I'm calling our Art Director now. [CALL generate_hero_images(slogan="Run Your Future", product_name="smart sneakers", ...)] They'll generate 4 photorealistic hero images..."
+        [Art Director completes and returns 4 images]
+        You: "Fantastic! Our Art Director created 4 hero images. [presents images]. Which one stands out to you?"
+
+        User: "I like image #2, can you create a video from it?"
+        You: "Great choice! I'm calling our Video Producer now. [CALL generate_social_video(image_asset_id="img_abc123", ...)] They'll create a 15-second social media video clip..."
+
+        Always be conversational, proactive with updates, and ready to continue the dialogue.
         """
+
+    async def _initialize_project_brief(self) -> None:
+        """
+        Initialize or load project brief and send to frontend.
+        """
+        from app.models.brief import ProjectBrief
+        from datetime import datetime
+
+        # Try to load existing brief
+        brief = await redis_client.get_project_brief(self.project_id)
+
+        # If no brief exists, create a default one
+        if not brief:
+            self._log("info", f"📋 Creating new project brief for {self.project_id}")
+            brief = ProjectBrief(
+                project_id=self.project_id,
+                session_id=self.session_id,
+                product_name="Aura Smart Sneaker" if self.project_id == "aura_smart_sneaker" else "",
+                product_category="footwear" if self.project_id == "aura_smart_sneaker" else "",
+                theme="futuristic urban athlete" if self.project_id == "aura_smart_sneaker" else "",
+                key_features=["glowing sole", "smart tracking", "adaptive cushioning"] if self.project_id == "aura_smart_sneaker" else [],
+                brand_tone="innovative, energetic, tech-forward" if self.project_id == "aura_smart_sneaker" else "",
+                target_market="Urban athletes aged 18-35" if self.project_id == "aura_smart_sneaker" else "",
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
+            )
+            # Save to Redis
+            await redis_client.save_project_brief(brief)
+        else:
+            self._log("info", f"📋 Loaded existing project brief for {self.project_id}")
+
+        # Send brief to frontend
+        if self.frontend_ws:
+            try:
+                await self.frontend_ws.send_json({
+                    "type": "brief_init",
+                    "data": {
+                        "brief": brief.model_dump(mode="json"),
+                    },
+                })
+                self._log("info", f"📤 Sent project brief to frontend")
+            except Exception as e:
+                logger.error(f"Error sending brief to frontend: {e}")
 
     async def connect(self, frontend_websocket: WebSocket) -> None:
         """
@@ -276,12 +530,18 @@ class GeminiLiveConnection:
         await frontend_websocket.accept()
         self.frontend_ws = frontend_websocket
 
+        # Initialize project brief
+        await self._initialize_project_brief()
+
         # Connect to Gemini Live API
         try:
             self.gemini_session = await self._connect_to_gemini_live()
             self.is_connected = True
 
             self._log("info", "✓ Gemini Live connection established")
+
+            # Start the agent result listener
+            self._start_result_listener()
 
             # Start bidirectional streaming
             await asyncio.gather(
@@ -296,14 +556,48 @@ class GeminiLiveConnection:
             if self.frontend_ws:
                 await self.frontend_ws.close(code=1011, reason=f"Connection error: {e}")
 
-    async def _connect_to_gemini_live(self):
+    async def _extend_session(self) -> None:
+        """
+        Extend the Gemini Live session by reconnecting with session resumption.
+        Called when a go_away message is received.
+        """
+        try:
+            self._log("info", "🔄 Extending session with resumption...")
+
+            # Close current session
+            if hasattr(self, '_session_context') and self._session_context:
+                try:
+                    await self._session_context.__aexit__(None, None, None)
+                except Exception as e:
+                    self._log("warning", f"Error closing old session: {e}")
+
+            # Reconnect with session resumption
+            old_handle = self._session_handle
+            self.gemini_session = await self._connect_to_gemini_live(resume_handle=old_handle)
+
+            self._log("info", "✓ Session extended successfully")
+
+        except Exception as e:
+            self._log("error", f"✗ Failed to extend session: {e}")
+            import traceback
+            self._log("error", f"Traceback: {traceback.format_exc()}")
+
+    async def _connect_to_gemini_live(self, resume_handle: Optional[str] = None):
         """
         Establish connection to Gemini Live API using google.genai SDK (Vertex AI).
+
+        Args:
+            resume_handle: Optional session handle to resume previous session
 
         Returns:
             Gemini Live session
         """
-        self._log("info", "🔗 Connecting to Gemini Live API (Vertex AI)")
+        if resume_handle:
+            self._log("info", f"🔗 Reconnecting to Gemini Live API with session resumption")
+            self._log("warning", "⚠️ Session resumption may not preserve function calling tools!")
+            self._log("warning", "⚠️ Consider starting fresh session instead of resuming for tool availability")
+        else:
+            self._log("info", "🔗 Connecting to Gemini Live API (Vertex AI)")
 
         # Define agent tools for function calling
         agent_tools = self._get_agent_tools()
@@ -339,9 +633,19 @@ class GeminiLiveConnection:
                 "parts": [{"text": self.system_prompt.strip()}]
             }
 
-        # Add function calling tools
+        # Add function calling tools (always, even during resumption)
+        # NOTE: Resumed sessions may ignore tool configuration changes
         if agent_tools:
             config.tools = [{"function_declarations": agent_tools}]
+            tool_names = [tool["name"] for tool in agent_tools]
+            self._log("info", f"🔧 Registered {len(agent_tools)} tools: {', '.join(tool_names)}")
+            if resume_handle:
+                self._log("warning", "⚠️ Tools added to resumed session config, but API may ignore them")
+
+        # Add session resumption if handle provided
+        if resume_handle:
+            config.session_resumption = SessionResumptionConfig(handle=resume_handle)
+            self._log("info", f"🔄 Using session resumption with handle")
 
         # Model name for Vertex AI
         # Vertex AI uses: "gemini-live-2.5-flash-preview-native-audio-09-2025"
@@ -554,6 +858,20 @@ class GeminiLiveConnection:
                         self._log("info", f"📥 Message #{message_count} from Gemini (Turn: {self.turn_count})")
                     try:
 
+                        # Track session handle for resumption
+                        if hasattr(response, 'setup_complete') and response.setup_complete:
+                            if hasattr(response.setup_complete, 'handle'):
+                                self._session_handle = response.setup_complete.handle
+                                self._log("info", f"📋 Session handle captured for resumption")
+
+                        # Handle go_away message - session expiration warning
+                        if hasattr(response, 'go_away') and response.go_away:
+                            time_left = getattr(response.go_away, 'time_left', None)
+                            if time_left is not None:
+                                self._log("warning", f"⏰ Session expiring in {time_left}s - will reconnect with resumption...")
+                                # Schedule reconnection before expiration
+                                asyncio.create_task(self._extend_session())
+
                         # Handle server content (audio and/or text)
                         if hasattr(response, 'server_content') and response.server_content:
                             # Check for waiting_for_input state
@@ -607,8 +925,21 @@ class GeminiLiveConnection:
 
                         # Handle tool calls
                         if hasattr(response, 'tool_call') and response.tool_call:
-                            self._log("info", "🔧 Tool call received")
+                            self._log("info", "🔧🔧🔧 TOOL CALL RECEIVED FROM GEMINI 🔧🔧🔧")
+                            self._log("info", f"🔧 Tool call object: {response.tool_call}")
                             await self._handle_tool_call_genai(response.tool_call)
+                        else:
+                            # Debug: Check if this message has tool call in a different field
+                            if hasattr(response, '__dict__'):
+                                response_dict = {k: v for k, v in response.__dict__.items() if not k.startswith('_')}
+                                if any('tool' in str(k).lower() or 'function' in str(k).lower() for k in response_dict.keys()):
+                                    self._log("warning", f"⚠️ Response has tool-related fields but tool_call is None: {list(response_dict.keys())}")
+
+                        # Debug: Check if response has other tool-related attributes
+                        if hasattr(response, '__dict__'):
+                            response_attrs = [attr for attr in dir(response) if not attr.startswith('_')]
+                            if any('tool' in attr.lower() or 'function' in attr.lower() for attr in response_attrs):
+                                self._log("debug", f"🔍 Response has tool-related attrs: {[attr for attr in response_attrs if 'tool' in attr.lower() or 'function' in attr.lower()]}")
 
                     except Exception as e:
                         self._log("error", f"✗ Response processing error: {e}")
@@ -616,11 +947,43 @@ class GeminiLiveConnection:
                         self._log("error", f"Traceback: {traceback.format_exc()}")
 
         except Exception as e:
-            self._log("error", f"✗ Gemini to Frontend error: {e}")
+            error_msg = str(e)
+
+            # Log different types of errors appropriately
+            if "1011" in error_msg and "internal error" in error_msg.lower():
+                self._log("error", f"✗ Gemini Live server error (1011): {error_msg}")
+                self._log("warning", "⚠️ This is a server-side error from Gemini Live API")
+                self._log("warning", "⚠️ Possible causes: function call triggered server bug, session timeout, or service issue")
+            else:
+                self._log("error", f"✗ Gemini to Frontend error: {e}")
+
             import traceback
             self._log("error", f"Traceback: {traceback.format_exc()}")
             # If a major error occurs, break the main loop
             self.is_connected = False
+
+    async def _safe_send_to_frontend(self, message: dict) -> bool:
+        """
+        Safely send a message to the frontend WebSocket.
+
+        Args:
+            message: Message dictionary to send
+
+        Returns:
+            True if sent successfully, False otherwise
+        """
+        if not self.frontend_ws:
+            return False
+
+        try:
+            from starlette.websockets import WebSocketState
+            if self.frontend_ws.client_state == WebSocketState.CONNECTED:
+                await self.frontend_ws.send_json(message)
+                return True
+            else:
+                return False
+        except Exception:
+            return False
 
     async def _send_audio_to_frontend(self, audio_base64: str, mime_type: str) -> None:
         """
@@ -630,17 +993,11 @@ class GeminiLiveConnection:
             audio_base64: Base64 encoded audio
             mime_type: Audio MIME type
         """
-        if not self.frontend_ws:
-            return
-
-        try:
-            await self.frontend_ws.send_json({
-                "type": "audio_output",
-                "data": audio_base64,
-                "mime_type": mime_type,
-            })
-        except Exception as e:
-            logger.error(f"Error sending audio to frontend: {e}")
+        await self._safe_send_to_frontend({
+            "type": "audio_output",
+            "data": audio_base64,
+            "mime_type": mime_type,
+        })
 
     async def _send_text_to_frontend(self, text: str, role: str) -> None:
         """
@@ -650,20 +1007,14 @@ class GeminiLiveConnection:
             text: Text content
             role: Message role (user or assistant)
         """
-        if not self.frontend_ws:
-            return
+        from datetime import datetime
 
-        try:
-            from datetime import datetime
-
-            await self.frontend_ws.send_json({
-                "type": "text_output",
-                "text": text,
-                "role": role,
-                "timestamp": datetime.utcnow().isoformat(),
-            })
-        except Exception as e:
-            logger.error(f"Error sending text to frontend: {e}")
+        await self._safe_send_to_frontend({
+            "type": "text_output",
+            "text": text,
+            "role": role,
+            "timestamp": datetime.utcnow().isoformat(),
+        })
 
     async def _send_announcement_to_frontend(self, message: str, type: str = "info") -> None:
         """
@@ -673,19 +1024,393 @@ class GeminiLiveConnection:
             message: The announcement message content.
             type: The type of announcement (e.g., 'info', 'success', 'error').
         """
-        if not self.frontend_ws:
-            return
+        await self._safe_send_to_frontend({
+            "type": "producer_announcement",
+            "data": {
+                "message": message,
+                "announcement_type": type,
+            },
+        })
+
+    async def _send_agent_status(self, agent_id: str, status: str, current_task: Optional[str] = None) -> None:
+        """
+        Send agent status update to the frontend.
+
+        Args:
+            agent_id: Agent identifier
+            status: Status (idle, thinking, complete, error)
+            current_task: Current task description
+        """
+        success = await self._safe_send_to_frontend({
+            "type": "agent_status",
+            "data": {
+                "agent_id": agent_id,
+                "status": status,
+                "current_task": current_task,
+            },
+        })
+        if success:
+            self._log("info", f"📤 Sent agent status: {agent_id} = {status}")
+
+    async def _send_asset_to_frontend(self, agent_id: str, asset_data: Dict[str, Any]) -> None:
+        """
+        Send asset data to the frontend for display.
+
+        Args:
+            agent_id: Agent identifier
+            asset_data: Asset data from agent execution
+        """
+        success = await self._safe_send_to_frontend({
+            "type": "asset_added",
+            "data": {
+                "agent_id": agent_id,
+                "asset_type": "result",
+                "asset_data": asset_data,
+            },
+        })
+        if success:
+            self._log("info", f"📤 Sent asset for agent: {agent_id}")
+
+    def _create_result_summary(self, agent_id: str, result: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Create a compact summary of agent result for Gemini (without large data like base64 images).
+
+        Args:
+            agent_id: Agent identifier
+            result: Full agent result
+
+        Returns:
+            Compact summary suitable for sending to Gemini
+        """
+        if agent_id == "strategy":
+            # Strategy: Include slogans and persona summaries
+            return {
+                "slogans": result.get("slogans", []),
+                "personas": [
+                    {
+                        "name": p.get("name"),
+                        "age_range": p.get("age_range"),
+                        "description": p.get("description")
+                    }
+                    for p in result.get("personas", [])
+                ],
+                "market_analysis": result.get("market_analysis", "")[:200] + "...",  # Truncate
+            }
+
+        elif agent_id == "art_director":
+            # Art Director: Strip out base64 image URLs, keep metadata only
+            images = result.get("images", [])
+            return {
+                "status": "completed",
+                "image_count": len(images),
+                "images": [
+                    {
+                        "asset_id": img.get("asset_id"),
+                        "description": img.get("description"),
+                        # REMOVE url field - it contains massive base64 data
+                    }
+                    for img in images
+                ],
+                "style_guide": result.get("style_guide", "")[:200] + "..."  # Truncate
+            }
+
+        elif agent_id == "video_producer":
+            # Video Producer: Strip out video URL, keep metadata only
+            video = result.get("video", {})
+            return {
+                "status": "completed",
+                "video": {
+                    "asset_id": video.get("asset_id"),
+                    "description": video.get("description"),
+                    "duration": video.get("duration"),
+                    # REMOVE url field - it may contain large data
+                },
+                "revision_count": len(result.get("revision_history", [])),
+                "critique_notes": result.get("critique_notes", "")[:200] if result.get("critique_notes") else None
+            }
+
+        elif agent_id == "audio_team":
+            # Audio Team: Strip out audio URLs, keep metadata
+            podcast_script = result.get("podcast_ad", {}).get("script", "")
+            suggestion = result.get("proactive_suggestion", "")
+
+            return {
+                "status": "completed",
+                "jingle": {
+                    "asset_id": result.get("jingle", {}).get("asset_id"),
+                    "description": result.get("jingle", {}).get("description"),
+                },
+                "podcast_ad": {
+                    "asset_id": result.get("podcast_ad", {}).get("asset_id"),
+                    "script": (podcast_script[:200] + "...") if podcast_script else None
+                },
+                "proactive_suggestion": (suggestion[:200] + "...") if suggestion else None
+            }
+
+        elif agent_id == "web_dev":
+            # Web Dev: Strip out full code, keep metadata
+            code = result.get("code", {})
+            return {
+                "status": "completed",
+                "code": {
+                    "asset_id": code.get("asset_id"),
+                    "description": "Landing page with HTML/CSS/JS",
+                    "framework": result.get("framework", "vanilla"),
+                },
+                "deployment_status": result.get("deployment_status", "preview")
+            }
+
+        else:
+            # Default: Return a simple success message
+            return {
+                "status": "completed",
+                "agent_id": agent_id,
+                "message": f"{agent_id} task completed successfully"
+            }
+
+    async def _update_brief_from_agent_result(self, agent_id: str, result: Dict[str, Any], task: Dict[str, Any]) -> None:
+        """
+        Update project brief based on agent execution results.
+
+        Args:
+            agent_id: Agent identifier
+            result: Agent execution result
+            task: Task parameters that were used
+        """
+        from datetime import datetime
 
         try:
-            await self.frontend_ws.send_json({
-                "type": "producer_announcement",
-                "data": {
-                    "message": message,
-                    "announcement_type": type,
-                },
-            })
+            # Get current brief
+            brief = await redis_client.get_project_brief(self.project_id)
+            if not brief:
+                self._log("warning", f"No brief found for project {self.project_id}")
+                return
+
+            updates = {}
+            changed_fields = []
+
+            # Update brief based on agent type
+            if agent_id == "strategy":
+                # Strategy agent might refine product info from task
+                if task.get("product_name") and not brief.product_name:
+                    updates["product_name"] = task.get("product_name")
+                    changed_fields.append("product_name")
+                if task.get("product_category") and not brief.product_category:
+                    updates["product_category"] = task.get("product_category")
+                    changed_fields.append("product_category")
+                if task.get("theme") and not brief.theme:
+                    updates["theme"] = task.get("theme")
+                    changed_fields.append("theme")
+                if task.get("brand_tone") and not brief.brand_tone:
+                    updates["brand_tone"] = task.get("brand_tone")
+                    changed_fields.append("brand_tone")
+                if task.get("target_market") and not brief.target_market:
+                    updates["target_market"] = task.get("target_market")
+                    changed_fields.append("target_market")
+                if task.get("key_features") and not brief.key_features:
+                    updates["key_features"] = task.get("key_features")
+                    changed_fields.append("key_features")
+
+            elif agent_id == "art_director":
+                # Art director uses selected slogan
+                if task.get("slogan") and brief.selected_slogan != task.get("slogan"):
+                    updates["selected_slogan"] = task.get("slogan")
+                    changed_fields.append("selected_slogan")
+
+            # Apply updates if any
+            if updates:
+                updates["updated_at"] = datetime.utcnow()
+                brief_updated = await redis_client.update_project_brief(self.project_id, updates)
+
+                # Send brief update to frontend
+                if self.frontend_ws:
+                    await self.frontend_ws.send_json({
+                        "type": "brief_update",
+                        "data": {
+                            "brief": brief_updated.model_dump(mode="json"),
+                            "changed_fields": changed_fields,
+                        },
+                    })
+                    self._log("info", f"📋 Updated project brief, changed fields: {changed_fields}")
+
         except Exception as e:
-            logger.error(f"Error sending announcement to frontend: {e}")
+            logger.error(f"Error updating brief from agent result: {e}")
+
+    def _start_result_listener(self) -> None:
+        """
+        Starts an asyncio task to listen for agent results on a Redis Pub/Sub channel.
+        """
+        if self._result_listener_task and not self._result_listener_task.done():
+            self._log("warning", "⚠️ Result listener already running.")
+            return
+
+        self._log("info", "🎧 Starting agent result listener task...")
+        self._result_listener_task = asyncio.create_task(self._listen_for_agent_results())
+        self._log("info", "✓ Result listener task created - will receive agent results via Redis Pub/Sub")
+
+    async def _listen_for_agent_results(self) -> None:
+        """
+        Listens for agent results on a Redis Pub/Sub channel and sends them to Gemini.
+        """
+        channel_name = f"agent_results:{self.session_id}"
+        self._log("info", f"Subscribing to Redis channel: {channel_name} for agent results.")
+
+        try:
+            pubsub = redis_client.client.pubsub()  # type: ignore
+            await pubsub.subscribe(channel_name)
+            self._log("info", f"Successfully subscribed to {channel_name}.")
+
+            while self.is_connected:
+                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if message and message['type'] == 'message':
+                    try:
+                        # Handle both bytes and string data
+                        message_data = message['data']
+                        if isinstance(message_data, bytes):
+                            message_data = message_data.decode('utf-8')
+
+                        data = json.loads(message_data)
+                        agent_id = data.get("agent_id")
+                        call_id = data.get("call_id")
+                        result = data.get("result")
+                        status = data.get("status")
+
+                        self._log("info", f"Received agent result for {agent_id} (Call ID: {call_id}, Status: {status})")
+
+                        if call_id and self.gemini_session:
+                            if status == "completed":
+                                await self.gemini_session.send_tool_response(
+                                    function_responses=[
+                                        {
+                                            "id": call_id,
+                                            "response": result
+                                        }
+                                    ]
+                                )
+                                self._log("info", f"📤 Sent agent result for {agent_id} (Call ID: {call_id}) to Gemini.")
+                            elif status == "failed":
+                                await self.gemini_session.send_tool_response(
+                                    function_responses=[
+                                        {
+                                            "id": call_id,
+                                            "response": {"error": f"Agent {agent_id} failed: {result.get("error", "Unknown error")}"}
+                                        }
+                                    ]
+                                )
+                                self._log("error", f"📤 Sent agent failure for {agent_id} (Call ID: {call_id}) to Gemini.")
+
+                    except json.JSONDecodeError as e:
+                        self._log("error", f"Error decoding agent result message: {e}")
+                    except Exception as e:
+                        self._log("error", f"Error processing agent result: {e}")
+                await asyncio.sleep(0.1) # Prevent busy-waiting
+
+        except asyncio.CancelledError:
+            self._log("info", "Agent result listener task cancelled.")
+        except Exception as e:
+            self._log("error", f"Error in agent result listener: {e}")
+        finally:
+            await pubsub.unsubscribe(channel_name)
+            await pubsub.close()
+            self._log("info", f"Unsubscribed from Redis channel: {channel_name}.")
+
+    async def _execute_agent_with_result_publishing(
+        self,
+        orchestrator: Any,
+        agent_id: str,
+        task: Dict[str, Any],
+        project_id: str,
+        session_id: str,
+        call_id: Optional[str] = None,
+    ) -> None:
+        """
+        Execute agent and publish result to Redis Pub/Sub for Gemini Live.
+
+        Args:
+            orchestrator: AgentOrchestrator instance
+            agent_id: Agent to execute
+            task: Task parameters
+            project_id: Project identifier
+            session_id: Session identifier for Redis channel
+            call_id: Function call ID from Gemini
+        """
+        self._log("info", f"🚀 _execute_agent_with_result_publishing STARTED for agent: {agent_id}")
+        # Log task summary without potentially large data (image URLs can be 2MB base64)
+        task_summary = {k: (v[:50] + "..." if isinstance(v, str) and len(v) > 50 else v) for k, v in task.items() if k not in ["image_url"]}
+        if "image_url" in task:
+            task_summary["image_url"] = "data URI" if task["image_url"] and task["image_url"].startswith("data:") else task["image_url"][:50]
+        self._log("info", f"🚀 Task summary: {task_summary}")
+        self._log("info", f"🚀 Project ID: {project_id}, Session ID: {session_id}, Call ID: {call_id}")
+        self._log("info", f"🚀 This is running in BACKGROUND task - Gemini should continue talking")
+
+        try:
+            # Send agent status: thinking
+            await self._send_agent_status(agent_id, "thinking", f"Executing {agent_id} task...")
+
+            # Execute the agent
+            self._log("info", f"🚀 Calling orchestrator.execute_agent for {agent_id}...")
+            result = await orchestrator.execute_agent(
+                agent_id=agent_id,
+                task=task,
+                project_id=project_id,
+                with_critique=False,
+                announcement_callback=self._send_announcement_to_frontend,
+            )
+
+            self._log("info", f"🚀 Agent {agent_id} execution completed successfully")
+            self._log("info", f"🚀 Result: {str(result)[:200]}...")
+
+            # Send asset to frontend for display
+            await self._send_asset_to_frontend(agent_id, result)
+
+            # Update project brief based on agent results
+            await self._update_brief_from_agent_result(agent_id, result, task)
+
+            # Send agent status: complete
+            await self._send_agent_status(agent_id, "complete", None)
+
+            # Create a compact summary for Gemini (without large base64 image data)
+            result_summary = self._create_result_summary(agent_id, result)
+
+            # Publish result to Redis Pub/Sub channel for the session
+            channel_name = f"agent_results:{session_id}"
+            result_message = {
+                "agent_id": agent_id,
+                "call_id": call_id,
+                "result": result_summary,  # Use summary instead of full result
+                "status": "completed",
+            }
+
+            await redis_client.client.publish(  # type: ignore
+                channel_name,
+                json.dumps(result_message)
+            )
+
+            self._log("info", f"✓ Published {agent_id} result to {channel_name} (Call ID: {call_id})")
+
+        except Exception as e:
+            self._log("error", f"✗ Agent {agent_id} execution failed: {e}")
+            import traceback
+            self._log("error", f"Traceback: {traceback.format_exc()}")
+
+            # Send agent status: error
+            await self._send_agent_status(agent_id, "error", f"Failed: {str(e)}")
+
+            # Publish failure to Redis
+            channel_name = f"agent_results:{session_id}"
+            error_message = {
+                "agent_id": agent_id,
+                "call_id": call_id,
+                "result": {"error": str(e)},
+                "status": "failed",
+            }
+
+            await redis_client.client.publish(  # type: ignore
+                channel_name,
+                json.dumps(error_message)
+            )
+
+            self._log("info", f"✓ Published {agent_id} error to {channel_name} (Call ID: {call_id})")
 
     async def _handle_tool_call_genai(self, tool_call: Any) -> None:
         """
@@ -694,6 +1419,10 @@ class GeminiLiveConnection:
         Args:
             tool_call: Tool call object from genai SDK
         """
+        self._log("info", "📞 _handle_tool_call_genai called")
+        self._log("info", f"📞 tool_call type: {type(tool_call)}")
+        self._log("info", f"📞 tool_call attributes: {dir(tool_call)}")
+
         await self._send_announcement_to_frontend(
             message="Tool call received from Gemini. Routing to the appropriate agent...",
             type="info"
@@ -703,32 +1432,39 @@ class GeminiLiveConnection:
             function_calls = []
             if hasattr(tool_call, 'function_calls'):
                 function_calls = tool_call.function_calls
+                self._log("info", f"📞 Found function_calls: {function_calls}")
 
             if not function_calls:
-                self._log("warning", "Tool call with no function calls")
+                self._log("warning", "⚠️ Tool call with no function calls")
+                self._log("warning", f"⚠️ tool_call content: {tool_call}")
                 return
 
+            self._log("info", f"📞 Processing {len(function_calls)} function calls")
             for func_call in function_calls:
                 function_name = func_call.name if hasattr(func_call, 'name') else func_call.get('name')
                 function_args = func_call.args if hasattr(func_call, 'args') else func_call.get('args', {})
-                call_id = func_call.id if hasattr(func_call, 'id') else func_call.get('id')
 
-                self._log("info", f"🔧 Executing function: {function_name} with args: {function_args}")
+                # Try multiple ways to get call_id
+                call_id = None
+                if hasattr(func_call, 'id'):
+                    call_id = func_call.id
+                elif hasattr(func_call, 'get'):
+                    call_id = func_call.get('id')
 
-                # Route to appropriate agent
-                result = await self._execute_agent_function(function_name, function_args)
+                # Debug: check all attributes to find the ID
+                self._log("info", f"📞 func_call attributes: {[attr for attr in dir(func_call) if not attr.startswith('_')]}")
 
-                # Send function response back to Gemini using SDK
-                if self.gemini_session:
-                    await self.gemini_session.send_tool_response(
-                        function_responses=[
-                            {
-                                "id": call_id,
-                                "response": result
-                            }
-                        ]
-                    )
-                    self._log("info", f"📤 Sent function response for call: {call_id}")
+                # Generate a temporary call_id if none exists
+                if not call_id:
+                    import uuid
+                    call_id = f"temp_{uuid.uuid4().hex[:8]}"
+                    self._log("warning", f"⚠️ No call_id found, generated temporary: {call_id}")
+
+                self._log("info", f"🔧 Dispatching agent for function: {function_name} (Call ID: {call_id}) with args: {function_args}")
+
+                # Route to appropriate agent. This now runs in the background.
+                # The result will be sent back to Gemini by a separate listener.
+                await self._execute_agent_function(function_name, function_args, call_id)
 
         except Exception as e:
             self._log("error", f"✗ Tool call error: {e}")
@@ -767,7 +1503,7 @@ class GeminiLiveConnection:
             self._log("error", f"Traceback: {traceback.format_exc()}")
 
     async def _execute_agent_function(
-        self, function_name: str, args: Dict[str, Any]
+        self, function_name: str, args: Dict[str, Any], call_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Execute agent based on function call.
@@ -775,6 +1511,7 @@ class GeminiLiveConnection:
         Args:
             function_name: Name of the function called
             args: Function arguments
+            call_id: Function call ID from Gemini (for async result matching)
 
         Returns:
             Agent execution result
@@ -784,47 +1521,111 @@ class GeminiLiveConnection:
 
         orchestrator = AgentOrchestrator()
 
-        try:
-            if function_name == "create_campaign_strategy":
-                self._log("info", "🎯 Executing Strategy Agent")
+        # Store call_id in task for result publishing
+        session_id = self.session_id
+        call_id_for_task = call_id
 
-                # Build task from args
+        try:
+            self._log("info", f"🎯 _execute_agent_function called with: {function_name}")
+            self._log("info", f"🎯 Function args: {args}")
+            self._log("info", f"🎯 Call ID: {call_id_for_task}")
+
+            if function_name == "update_project_brief":
+                self._log("info", "📋 Matched update_project_brief function")
+
+                # Update the project brief with any provided fields
+                from datetime import datetime
+
+                brief = await redis_client.get_project_brief(self.project_id)
+                if not brief:
+                    self._log("warning", f"No brief found for project {self.project_id}")
+                    return {"status": "error", "message": "Project brief not found"}
+
+                updates = {}
+                changed_fields = []
+
+                # Update only fields that are provided in args
+                if args.get("product_name"):
+                    updates["product_name"] = args.get("product_name")
+                    changed_fields.append("product_name")
+                if args.get("product_category"):
+                    updates["product_category"] = args.get("product_category")
+                    changed_fields.append("product_category")
+                if args.get("theme"):
+                    updates["theme"] = args.get("theme")
+                    changed_fields.append("theme")
+                if args.get("brand_tone"):
+                    updates["brand_tone"] = args.get("brand_tone")
+                    changed_fields.append("brand_tone")
+                if args.get("target_market"):
+                    updates["target_market"] = args.get("target_market")
+                    changed_fields.append("target_market")
+                if args.get("key_features"):
+                    updates["key_features"] = args.get("key_features")
+                    changed_fields.append("key_features")
+
+                if updates:
+                    updates["updated_at"] = datetime.utcnow()
+                    brief_updated = await redis_client.update_project_brief(self.project_id, updates)
+
+                    # Send brief update to frontend
+                    if self.frontend_ws:
+                        await self.frontend_ws.send_json({
+                            "type": "brief_update",
+                            "data": {
+                                "brief": brief_updated.model_dump(mode="json"),
+                                "changed_fields": changed_fields,
+                            },
+                        })
+                        self._log("info", f"📋 Updated project brief, changed fields: {changed_fields}")
+
+                    return {"status": "success", "updated_fields": changed_fields}
+                else:
+                    self._log("info", "📋 No fields to update in brief")
+                    return {"status": "success", "message": "No fields to update"}
+
+            elif function_name == "create_campaign_strategy":
+                self._log("info", "🎯 Matched create_campaign_strategy function")
+                self._log("info", f"🎯 Function args: {args}")
+
+                # Get current brief to fill in missing parameters
+                brief = await redis_client.get_project_brief(self.project_id)
+
+                # Build task from args, with fallback to project brief
                 task = {
                     "task_id": f"strategy_{self.session_id}",
-                    "product_name": args.get("product_name"),
-                    "product_category": args.get("product_category"),
-                    "theme": args.get("theme", "modern"),
-                    "key_features": args.get("key_features", []),
-                    "brand_tone": args.get("brand_tone", "professional"),
-                    "target_market": args.get("target_market", "general audience"),
+                    "product_name": args.get("product_name") or (brief.product_name if brief else "Product"),
+                    "product_category": args.get("product_category") or (brief.product_category if brief else "product"),
+                    "theme": args.get("theme") or (brief.theme if brief else "modern"),
+                    "key_features": args.get("key_features") or (brief.key_features if brief else []),
+                    "brand_tone": args.get("brand_tone") or (brief.brand_tone if brief else "professional"),
+                    "target_market": args.get("target_market") or (brief.target_market if brief else "general audience"),
                 }
 
-                result = await orchestrator.execute_agent(
-                    "strategy",
-                    task=task,
-                    project_id=self.project_id,
-                    with_critique=False,
-                    announcement_callback=self._send_announcement_to_frontend,
+                # Log task summary without potentially large data
+                self._log("info", f"🎯 Built task for: {task.get('product_name')}, category: {task.get('product_category')}")
+
+                # Execute agent in background and publish result to Redis
+                asyncio.create_task(
+                    self._execute_agent_with_result_publishing(
+                        orchestrator=orchestrator,
+                        agent_id="strategy",
+                        task=task,
+                        project_id=self.project_id,
+                        session_id=session_id,
+                        call_id=call_id_for_task,
+                    )
                 )
 
-                self._log("info", f"✓ Strategy Agent completed")
+                self._log("info", f"✓ Strategy Agent dispatched")
 
-                # Send result to frontend
-                if self.frontend_ws:
-                    await self.frontend_ws.send_json({
-                        "type": "agent_result",
-                        "agent": "strategy",
-                        "data": result
-                    })
-
-                return {
-                    "success": True,
-                    "agent": "strategy",
-                    "result": result
-                }
+                # Don't return anything - result will be sent via Redis Pub/Sub when agent completes
+                # Returning None here allows Gemini to continue the conversation while agent works
+                return
 
             elif function_name == "generate_hero_images":
-                self._log("info", "🎨 Executing Art Director Agent")
+                self._log("info", "🎨 Matched generate_hero_images function")
+                self._log("info", f"🎨 Function args: {args}")
 
                 # Build task from args
                 task = {
@@ -837,43 +1638,180 @@ class GeminiLiveConnection:
                     "key_features": args.get("key_features", []),
                 }
 
-                result = await orchestrator.execute_agent(
-                    "art_director",
-                    task=task,
-                    project_id=self.project_id,
-                    with_critique=False,
-                    announcement_callback=self._send_announcement_to_frontend,
+                # Don't log full task as it may contain large data
+                self._log("info", f"🎨 Built task for: {task.get('product_name')}, slogan: {task.get('slogan', '')[:50]}")
+
+                # Execute agent in background and publish result to Redis
+                asyncio.create_task(
+                    self._execute_agent_with_result_publishing(
+                        orchestrator=orchestrator,
+                        agent_id="art_director",
+                        task=task,
+                        project_id=self.project_id,
+                        session_id=session_id,
+                        call_id=call_id_for_task,
+                    )
                 )
 
-                self._log("info", f"✓ Art Director Agent completed")
+                self._log("info", f"✓ Art Director Agent dispatched")
+                return # No direct result returned
 
-                # Send result to frontend
-                if self.frontend_ws:
-                    await self.frontend_ws.send_json({
-                        "type": "agent_result",
-                        "agent": "art_director",
-                        "data": result
-                    })
+            elif function_name == "generate_social_video":
+                self._log("info", "🎬 Matched generate_social_video function")
+                self._log("info", f"🎬 Function args: {args}")
 
-                return {
-                    "success": True,
-                    "agent": "art_director",
-                    "result": result
+                # Look up the selected image from art director results
+                image_asset_id = args.get("image_asset_id")
+                image_url = None
+
+                if image_asset_id:
+                    # Try to get art director results from Redis
+                    art_director_result = await redis_client.get_agent_result("art_director", f"art_director_{self.session_id}")
+                    if art_director_result and "images" in art_director_result:
+                        # Find the image with matching asset_id
+                        for img in art_director_result["images"]:
+                            if img.get("asset_id") == image_asset_id:
+                                image_url = img.get("url")
+                                self._log("info", f"🎬 Found image URL for asset_id: {image_asset_id}")
+                                break
+
+                    if not image_url:
+                        self._log("warning", f"🎬 Could not find image with asset_id: {image_asset_id}")
+                        # Return error to Gemini
+                        return {"error": f"Image not found: {image_asset_id}"}
+                else:
+                    self._log("warning", "🎬 No image_asset_id provided")
+                    return {"error": "No image_asset_id provided"}
+
+                # Build task from args - video producer expects image_url, not image_asset_id
+                task = {
+                    "task_id": f"video_producer_{self.session_id}",
+                    "image_url": image_url,  # Pass URL, not asset_id
+                    "product_name": args.get("product_name"),
+                    "theme": args.get("theme", "modern"),
+                    "key_features": args.get("key_features", []),
+                    "slogan": args.get("slogan", ""),
+                    "product_category": args.get("product_category", "product"),
                 }
+
+                # Log task summary without full image URL (could be large base64)
+                image_summary = "data URI" if image_url and image_url.startswith("data:") else (image_url[:50] if image_url else "None")
+                self._log("info", f"🎬 Built task for: {task.get('product_name')}, image: {image_summary}")
+
+                # Execute agent in background and publish result to Redis
+                asyncio.create_task(
+                    self._execute_agent_with_result_publishing(
+                        orchestrator=orchestrator,
+                        agent_id="video_producer",
+                        task=task,
+                        project_id=self.project_id,
+                        session_id=session_id,
+                        call_id=call_id_for_task,
+                    )
+                )
+
+                self._log("info", f"✓ Video Producer Agent dispatched")
+                return # No direct result returned
+
+            elif function_name == "generate_audio_assets":
+                self._log("info", "🎵 Matched generate_audio_assets function")
+                self._log("info", f"🎵 Function args: {args}")
+
+                # Build task from args
+                task = {
+                    "task_id": f"audio_team_{self.session_id}",
+                    "product_name": args.get("product_name"),
+                    "slogan": args.get("slogan", ""),
+                    "theme": args.get("theme", "modern"),
+                    "brand_tone": args.get("brand_tone", "professional"),
+                    "product_category": args.get("product_category", "product"),
+                }
+
+                # Log task summary
+                self._log("info", f"🎵 Built task for: {task.get('product_name')}, theme: {task.get('theme')}")
+
+                # Execute agent in background and publish result to Redis
+                asyncio.create_task(
+                    self._execute_agent_with_result_publishing(
+                        orchestrator=orchestrator,
+                        agent_id="audio_team",
+                        task=task,
+                        project_id=self.project_id,
+                        session_id=session_id,
+                        call_id=call_id_for_task,
+                    )
+                )
+
+                self._log("info", f"✓ Audio Team Agent dispatched")
+                return # No direct result returned
+
+            elif function_name == "generate_landing_page":
+                self._log("info", "💻 Matched generate_landing_page function")
+                self._log("info", f"💻 Function args: {args}")
+
+                # Look up the selected image from art director results
+                image_asset_id = args.get("image_asset_id")
+                image_url = None
+
+                if image_asset_id:
+                    # Try to get art director results from Redis
+                    art_director_result = await redis_client.get_agent_result("art_director", f"art_director_{self.session_id}")
+                    if art_director_result and "images" in art_director_result:
+                        # Find the image with matching asset_id
+                        for img in art_director_result["images"]:
+                            if img.get("asset_id") == image_asset_id:
+                                image_url = img.get("url")
+                                self._log("info", f"💻 Found image URL for asset_id: {image_asset_id}")
+                                break
+
+                    if not image_url:
+                        self._log("warning", f"💻 Could not find image with asset_id: {image_asset_id}")
+                        return {"error": f"Image not found: {image_asset_id}"}
+                else:
+                    self._log("warning", "💻 No image_asset_id provided")
+                    return {"error": "No image_asset_id provided"}
+
+                # Build task from args
+                task = {
+                    "task_id": f"web_dev_{self.session_id}",
+                    "image_url": image_url,  # Pass URL, not asset_id
+                    "product_name": args.get("product_name"),
+                    "slogan": args.get("slogan"),
+                    "theme": args.get("theme", "modern"),
+                    "brand_tone": args.get("brand_tone", "professional"),
+                    "product_category": args.get("product_category", "product"),
+                    "key_features": args.get("key_features", []),
+                }
+
+                # Log task summary without full image URL
+                image_summary = "data URI" if image_url and image_url.startswith("data:") else (image_url[:50] if image_url else "None")
+                self._log("info", f"💻 Built task for: {task.get('product_name')}, image: {image_summary}")
+
+                # Execute agent in background and publish result to Redis
+                asyncio.create_task(
+                    self._execute_agent_with_result_publishing(
+                        orchestrator=orchestrator,
+                        agent_id="web_dev",
+                        task=task,
+                        project_id=self.project_id,
+                        session_id=session_id,
+                        call_id=call_id_for_task,
+                    )
+                )
+
+                self._log("info", f"✓ Web Dev Agent dispatched")
+                return # No direct result returned
 
             else:
                 self._log("warning", f"Unknown function: {function_name}")
-                return {
-                    "success": False,
-                    "error": f"Unknown function: {function_name}"
-                }
+                # For unknown functions, we might still want to return an error to Gemini
+                # For now, just return None
+                return
 
         except Exception as e:
             self._log("error", f"Agent execution error: {e}")
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            # For now, just return None on error
+            return
 
     async def _send_function_response(self, call_id: str, result: Dict[str, Any]) -> None:
         """
@@ -931,7 +1869,15 @@ class GeminiLiveConnection:
             self._log("error", f"   Session status: DEAD - this is a bug!")
 
         if self.frontend_ws:
-            await self.frontend_ws.send_json({"type": "turn_complete"})
+            try:
+                # Check if WebSocket is still open before sending
+                from starlette.websockets import WebSocketState
+                if self.frontend_ws.client_state == WebSocketState.CONNECTED:
+                    await self.frontend_ws.send_json({"type": "turn_complete"})
+                else:
+                    self._log("warning", f"⚠️ Frontend WebSocket not connected (state: {self.frontend_ws.client_state})")
+            except Exception as e:
+                self._log("warning", f"⚠️ Could not send turn_complete to frontend: {e}")
 
         if self.on_turn_complete:
             self.on_turn_complete()
@@ -941,6 +1887,17 @@ class GeminiLiveConnection:
         logger.info(f"Disconnecting Gemini Live session: {self.session_id}")
 
         self.is_connected = False
+
+        # Cancel the result listener task if it's running
+        if self._result_listener_task:
+            self._result_listener_task.cancel()
+            try:
+                await self._result_listener_task  # Await cancellation to complete
+            except asyncio.CancelledError:
+                self._log("info", "Result listener task successfully cancelled.")
+            except Exception as e:
+                self._log("error", f"Error awaiting cancelled result listener: {e}")
+            self._result_listener_task = None
 
         # Exit the context manager properly
         if hasattr(self, '_session_context') and self._session_context:

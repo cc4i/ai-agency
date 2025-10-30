@@ -98,8 +98,19 @@ class RedisClient:
 
     async def save_project_brief(self, brief: ProjectBrief) -> None:
         """Save project brief to Redis."""
+        # Convert to dict with JSON serialization
+        data = brief.model_dump(mode="json")
+        mapping = {}
+        for key, value in data.items():
+            if value is None:
+                mapping[key] = ""  # Store None as empty string
+            elif isinstance(value, (list, dict)):
+                mapping[key] = json.dumps(value)
+            else:
+                mapping[key] = str(value)  # Convert all to string
+
         await self.client.hset(  # type: ignore
-            f"project:{brief.project_id}:brief", mapping=brief.model_dump(mode="json")
+            f"project:{brief.project_id}:brief", mapping=mapping
         )
 
     async def get_project_brief(self, project_id: str) -> Optional[ProjectBrief]:
@@ -107,7 +118,51 @@ class RedisClient:
         data = await self.client.hgetall(f"project:{project_id}:brief")  # type: ignore
         if not data:
             return None
-        return ProjectBrief(**data)
+
+        # Deserialize JSON strings back to lists/dicts
+        # Fields that need JSON deserialization
+        json_fields = [
+            'key_features', 'personas', 'slogans', 'hero_images',
+            'selected_image', 'campaign_plan', 'completed_assets'
+        ]
+
+        parsed_data = {}
+        for key, value in data.items():
+            if key in json_fields:
+                try:
+                    # Parse JSON if value exists
+                    if value and value != "":
+                        parsed_data[key] = json.loads(value)
+                    else:
+                        # Set defaults for required list fields
+                        if key in ['key_features', 'personas', 'slogans', 'hero_images']:
+                            parsed_data[key] = []
+                        elif key == 'completed_assets':
+                            parsed_data[key] = {}
+                        else:
+                            parsed_data[key] = None
+                except (json.JSONDecodeError, TypeError):
+                    # Fallback to defaults on parse error
+                    if key in ['key_features', 'personas', 'slogans', 'hero_images']:
+                        parsed_data[key] = []
+                    elif key == 'completed_assets':
+                        parsed_data[key] = {}
+                    else:
+                        parsed_data[key] = None
+            elif key == 'version':
+                # Convert version to int
+                parsed_data[key] = int(value) if value else 1
+            elif key == 'plan_approved':
+                # Convert boolean
+                parsed_data[key] = value.lower() == 'true' if value else False
+            elif key in ['created_at', 'updated_at']:
+                # Keep as string, Pydantic will parse it
+                parsed_data[key] = value
+            else:
+                # Empty string means None for optional fields
+                parsed_data[key] = value if value != "" else None
+
+        return ProjectBrief(**parsed_data)
 
     async def update_project_brief(
         self, project_id: str, updates: Dict[str, Any]
@@ -121,8 +176,13 @@ class RedisClient:
         for key, value in updates.items():
             setattr(brief, key, value)
 
-        brief.version += 1
-        brief.updated_at = datetime.utcnow()
+        # Ensure version is incremented if not in updates
+        if 'version' not in updates:
+            brief.version += 1
+
+        # Ensure updated_at is set if not in updates
+        if 'updated_at' not in updates:
+            brief.updated_at = datetime.utcnow()
 
         # Save to Redis
         await self.save_project_brief(brief)
@@ -166,15 +226,42 @@ class RedisClient:
         self, agent_id: str, task_id: str, result: Dict[str, Any]
     ) -> None:
         """Store agent execution result."""
+        # Serialize lists and dicts to JSON strings for Redis
+        mapping = {}
+        for key, value in result.items():
+            if value is None:
+                mapping[key] = ""
+            elif isinstance(value, (list, dict)):
+                mapping[key] = json.dumps(value)
+            else:
+                mapping[key] = str(value)
+
         await self.client.hset(  # type: ignore
-            f"agent:{agent_id}:result:{task_id}", mapping=result
+            f"agent:{agent_id}:result:{task_id}", mapping=mapping
         )
 
     async def get_agent_result(
         self, agent_id: str, task_id: str
     ) -> Optional[Dict[str, Any]]:
         """Retrieve agent execution result."""
-        return await self.client.hgetall(f"agent:{agent_id}:result:{task_id}")  # type: ignore
+        data = await self.client.hgetall(f"agent:{agent_id}:result:{task_id}")  # type: ignore
+        if not data:
+            return None
+
+        # Deserialize JSON strings back to lists/dicts
+        parsed_data = {}
+        for key, value in data.items():
+            # Try to parse as JSON first
+            if value and value != "":
+                try:
+                    parsed_data[key] = json.loads(value)
+                except (json.JSONDecodeError, TypeError):
+                    # Not JSON, keep as string
+                    parsed_data[key] = value
+            else:
+                parsed_data[key] = None
+
+        return parsed_data
 
     # Event Publishing (Pub/Sub)
 

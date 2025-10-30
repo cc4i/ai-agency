@@ -304,17 +304,21 @@ This will resonate with {product_category} enthusiasts and create emotional conn
             brand_tone: Brand tone
 
         Returns:
-            Voice identifier
+            Voice identifier (Google Cloud TTS voice name)
         """
+        # Map brand tones to actual Google Cloud TTS voice names
+        # See: https://cloud.google.com/text-to-speech/docs/voices
         voice_mapping = {
-            "luxury": "professional_british_male",
-            "futuristic": "professional_female",
-            "edgy": "energetic_male",
-            "playful": "cheerful_female",
-            "professional": "professional_female",
+            "luxury": "en-GB-Neural2-B",        # British male, sophisticated
+            "futuristic": "en-US-Neural2-F",    # Female, clear and modern
+            "edgy": "en-US-Neural2-D",          # Male, energetic
+            "playful": "en-US-Neural2-E",       # Female, warm and friendly
+            "professional": "en-US-Studio-O",   # Female, professional quality
+            "energetic": "en-US-Neural2-J",     # Male, dynamic
+            "natural": "en-US-Neural2-F",       # Female, natural
         }
 
-        return voice_mapping.get(brand_tone, "professional_female")
+        return voice_mapping.get(brand_tone, "en-US-Studio-O")  # Default: professional female
 
     async def _generate_transcription(self, podcast_ad: AudioAsset) -> TranscriptionAsset:
         """

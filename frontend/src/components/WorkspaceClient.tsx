@@ -81,13 +81,15 @@ export default function WorkspaceClient() {
 
       {/* Main Content Area */}
       <div className="relative flex flex-1 overflow-hidden">
-        {/* Main content container */}
+        {/* Left Sidebar - Project Brief */}
+        <ProjectBriefPanel />
+
+        {/* Main content container - Asset Display */}
         <div className="flex-1 flex flex-col overflow-hidden">
           <AssetDisplay />
-          <ProjectBriefPanel />
         </div>
 
-        {/* Right Sidebar for Transcript */}
+        {/* Right Sidebar - Transcript */}
         <TranscriptDisplay />
       </div>
 

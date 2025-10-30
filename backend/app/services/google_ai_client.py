@@ -347,7 +347,7 @@ class ImagenClient:
     def __init__(self):
         """Initialize Imagen client."""
         self.client = genai_client
-        self.model_name = "imagen-3.0-generate-001"
+        self.model_name = "imagen-4.0-generate-001"
 
     async def generate_images(
         self,
@@ -356,7 +356,7 @@ class ImagenClient:
         aspect_ratio: str = "16:9",
     ) -> List[bytes]:
         """
-        Generate images using Imagen 3.
+        Generate images using Imagen 4.
 
         Args:
             prompt: Image generation prompt
@@ -388,7 +388,22 @@ class ImagenClient:
 
                 # Extract image bytes
                 if response.images:
-                    image_bytes = response.images[0].image.data
+                    image_obj = response.images[0]
+                    logger.info(f"Imagen: Image object type: {type(image_obj)}")
+                    logger.info(f"Imagen: Image object attributes: {dir(image_obj)}")
+
+                    # Try different ways to access image data
+                    if hasattr(image_obj, '_image_bytes'):
+                        image_bytes = image_obj._image_bytes
+                    elif hasattr(image_obj, 'image_bytes'):
+                        image_bytes = image_obj.image_bytes
+                    elif hasattr(image_obj, 'data'):
+                        image_bytes = image_obj.data
+                    elif hasattr(image_obj, 'image') and hasattr(image_obj.image, 'data'):
+                        image_bytes = image_obj.image.data
+                    else:
+                        raise AttributeError(f"Cannot find image data in Image object. Available attributes: {[a for a in dir(image_obj) if not a.startswith('_')]}")
+
                     images.append(image_bytes)
                     logger.info(f"Imagen: Generated image {i+1}/{number_of_images}")
 
@@ -406,7 +421,7 @@ class VeoClient:
     def __init__(self):
         """Initialize Veo client."""
         self.client = genai_client
-        self.model_name = "veo-002"
+        self.model_name = "veo-3.1-generate-preview"
 
     async def generate_video(
         self,
@@ -415,58 +430,119 @@ class VeoClient:
         duration_seconds: int = 8,
     ) -> bytes:
         """
-        Generate video using Veo 2.
+        Generate video using Veo 3.1 via REST API.
 
         Args:
             prompt: Video generation prompt
-            reference_image: Optional reference image URL
-            duration_seconds: Video duration (max 8s for Veo 2)
+            reference_image: Optional reference image (data URI or URL)
+            duration_seconds: Video duration (4, 6, or 8 seconds)
 
         Returns:
             Generated video as bytes
         """
         try:
-            if not self.client:
-                raise RuntimeError("GenAI client not initialized")
-
             logger.info(f"Veo: Generating {duration_seconds}s video with prompt: {prompt[:50]}...")
 
-            # Build config
-            config = {
-                "aspect_ratio": "16:9",
-                "duration_seconds": duration_seconds,
+            # Build Veo 3.1 API request
+            instance = {
+                "prompt": prompt,
             }
 
-            # Add reference image if provided
+            # Add reference image if provided (for image-to-video)
             if reference_image:
-                # Download reference image
-                import httpx
-                async with httpx.AsyncClient() as http_client:
-                    img_response = await http_client.get(reference_image)
-                    img_response.raise_for_status()
-                    img_data = img_response.content
+                # Check if it's a data URI (base64 encoded)
+                if reference_image.startswith("data:"):
+                    # Extract base64 data from data URI
+                    # Format: data:image/png;base64,iVBORw0KG...
+                    try:
+                        header, img_b64 = reference_image.split(",", 1)
+                        mime_type = header.split(":")[1].split(";")[0] if ":" in header else "image/png"
+                        logger.info(f"Veo: Using data URI reference image (mime: {mime_type}, size: {len(img_b64)} base64 chars)")
+                    except Exception as e:
+                        logger.error(f"Error parsing data URI: {e}")
+                        raise ValueError(f"Invalid data URI format: {e}")
+                else:
+                    # Download reference image from URL
+                    import httpx
+                    async with httpx.AsyncClient() as http_client:
+                        img_response = await http_client.get(reference_image)
+                        img_response.raise_for_status()
+                        img_data = img_response.content
 
-                # Encode as base64
-                img_b64 = base64.b64encode(img_data).decode('utf-8')
-                config["reference_image"] = {
-                    "mime_type": "image/jpeg",
-                    "data": img_b64
+                    # Encode as base64
+                    img_b64 = base64.b64encode(img_data).decode('utf-8')
+                    mime_type = "image/jpeg"
+                    logger.info(f"Veo: Downloaded reference image from URL ({len(img_data)} bytes)")
+
+                # Add image to instance (Veo 3.1 format)
+                instance["image"] = {
+                    "bytesBase64Encoded": img_b64,
+                    "mimeType": mime_type
                 }
 
-            # Generate video using genai SDK
-            response = await self.client.aio.models.generate_video(
-                model=self.model_name,
-                prompt=prompt,
-                config=config
-            )
+            # Build parameters (Veo 3.1 format)
+            parameters = {
+                "sampleCount": 1,
+                "durationSeconds": duration_seconds,
+                "generateAudio": False,  # Required for Veo 3.1
+            }
 
-            # Extract video bytes
-            video_bytes = response.video.data if response.video else b""
-            logger.info(f"Veo: Successfully generated video ({len(video_bytes)} bytes)")
-            return video_bytes
+            # Make direct REST API call to Vertex AI
+            from google.auth import default
+            from google.auth.transport.requests import Request
+            import httpx
+
+            # Get credentials
+            credentials, project = default()
+            if not credentials.valid:
+                credentials.refresh(Request())
+
+            # Build API endpoint
+            location = settings.google_cloud_location
+            endpoint = f"https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/publishers/google/models/{self.model_name}:predict"
+
+            # Build request body (Veo 3.1 format)
+            request_body = {
+                "instances": [instance],
+                "parameters": parameters
+            }
+
+            # Make request
+            headers = {
+                "Authorization": f"Bearer {credentials.token}",
+                "Content-Type": "application/json"
+            }
+
+            async with httpx.AsyncClient(timeout=300.0) as http_client:
+                response = await http_client.post(
+                    endpoint,
+                    json=request_body,
+                    headers=headers
+                )
+                response.raise_for_status()
+                result = response.json()
+
+            # Extract video bytes from response
+            if "predictions" in result and len(result["predictions"]) > 0:
+                prediction = result["predictions"][0]
+
+                # Video data is in bytesBase64Encoded field
+                if "bytesBase64Encoded" in prediction:
+                    video_b64 = prediction["bytesBase64Encoded"]
+                    video_bytes = base64.b64decode(video_b64)
+                    logger.info(f"Veo: Successfully generated video ({len(video_bytes)} bytes)")
+                    return video_bytes
+                else:
+                    logger.error(f"Veo: No bytesBase64Encoded in prediction: {prediction.keys()}")
+                    return b""
+            else:
+                logger.warning("No predictions in Veo response")
+                return b""
 
         except Exception as e:
             logger.error(f"Veo error: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             raise
 
 

@@ -50,7 +50,7 @@ class VideoProducerAgent(AgentBase):
         theme = task.get("theme", "modern")
         key_features = task.get("key_features", [])
         product_category = task.get("product_category", "product")
-        duration = task.get("duration_seconds", 15)
+        duration = task.get("duration_seconds", 8)  # Veo 3.1 supports 4, 6, or 8 seconds
 
         # Generate initial video
         video = await self._generate_video(
@@ -97,11 +97,9 @@ class VideoProducerAgent(AgentBase):
         Returns:
             VideoAsset
         """
-        # Build prompt
+        # Build prompt (image is passed separately in API call)
         base_prompt = f"""
         Create a dynamic {duration_seconds}-second social media video for {product_name}.
-
-        REFERENCE IMAGE: {image_url}
 
         VIDEO REQUIREMENTS:
         - Theme: {theme}
@@ -110,16 +108,16 @@ class VideoProducerAgent(AgentBase):
         - Key Features to Show: {', '.join(key_features[:3])}
 
         VISUAL TREATMENT:
-        - Start with establishing shot based on reference image
-        - Include 2-second close-up of key product feature
+        - Animate the provided reference image to life
+        - Start with establishing shot, then zoom into key product feature
         - Dynamic camera movement (smooth pan/zoom)
         - {theme} aesthetic maintained throughout
         - Professional {product_category} video style
 
         PACING:
-        - Seconds 0-5: Establishing shot with product
-        - Seconds 5-10: Close-up of key feature (e.g., glowing sole, unique element)
-        - Seconds 10-15: Pull back to hero shot with branding
+        - Seconds 0-3: Establishing shot with product
+        - Seconds 3-6: Close-up of key feature (e.g., glowing sole, unique element)
+        - Seconds 6-8: Pull back to hero shot with branding
 
         OUTPUT:
         - High-quality social media format

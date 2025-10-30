@@ -10,8 +10,9 @@ Handles:
 
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Callable
 
+from app.celery_app import celery_app
 from app.models.brief import ProjectBrief
 from app.services.agent_registry import agent_registry
 from app.services.redis_client import redis_client
@@ -82,7 +83,7 @@ class AgentOrchestrator:
         # Update agent status and announce start
         await redis_client.set_agent_status(agent_id, "working")
         if announcement_callback:
-            await announcement_callback(f"🤖 Agent '{agent.name}' is starting its task...", "info")
+            await announcement_callback(f"🤖 Agent '{agent.agent_id}' is starting its task...", "info")
 
         try:
             # Get project brief for context
@@ -107,7 +108,7 @@ class AgentOrchestrator:
             # Update status and announce completion
             await redis_client.set_agent_status(agent_id, "completed")
             if announcement_callback:
-                await announcement_callback(f"✅ Agent '{agent.name}' has completed its task.", "success")
+                await announcement_callback(f"✅ Agent '{agent.agent_id}' has completed its task.", "success")
 
             # Publish completion event
             await redis_client.publish_event(
@@ -127,7 +128,7 @@ class AgentOrchestrator:
             logger.error(f"Agent {agent_id} failed: {e}")
             await redis_client.set_agent_status(agent_id, "failed")
             if announcement_callback:
-                await announcement_callback(f"❌ Agent '{agent.name}' failed: {e}", "error")
+                await announcement_callback(f"❌ Agent '{agent.agent_id}' failed: {e}", "error")
             raise
 
     async def execute_parallel_agents(

@@ -28,7 +28,7 @@ export function AgentStatusBar() {
     <div className="border-b border-zinc-800 bg-zinc-950">
       <div className="container mx-auto px-6 py-4">
         <div className="flex items-center gap-6">
-          <div className="text-sm font-medium text-zinc-400">Agency Team:</div>
+          <div className="text-sm font-medium text-zinc-400">Agencies:</div>
 
           <div className="flex gap-4">
             {AGENTS.map((agent) => {

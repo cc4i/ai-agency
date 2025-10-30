@@ -157,20 +157,30 @@ class ArtDirectorAgent(AgentBase):
         }
 
         # Generate image using Imagen
-        image_data = await imagen_client.generate_images(
+        image_data_list = await imagen_client.generate_images(
             prompt=prompt,
             number_of_images=1,
             aspect_ratio="16:9",
         )
 
-        # In production, upload to GCS and get URL
-        # For now, create mock asset
+        # Convert image bytes to base64 data URI for display
+        import base64
         asset_id = f"img_{uuid.uuid4().hex[:12]}"
-        mock_url = f"gs://ai-agency-demo/images/{asset_id}.png"
+
+        if image_data_list and len(image_data_list) > 0:
+            image_bytes = image_data_list[0]
+            # Convert to base64 data URI
+            base64_data = base64.b64encode(image_bytes).decode('utf-8')
+            image_url = f"data:image/png;base64,{base64_data}"
+            logger.info(f"Converted image to data URI (length: {len(image_url)})")
+        else:
+            # Fallback if no image generated
+            logger.warning(f"No image generated for variation {variation}, using placeholder")
+            image_url = "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iODAwIiBoZWlnaHQ9IjQ1MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iODAwIiBoZWlnaHQ9IjQ1MCIgZmlsbD0iIzMzMyIvPjx0ZXh0IHg9IjUwJSIgeT0iNTAlIiBmb250LXNpemU9IjI0IiBmaWxsPSIjYWFhIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkb21pbmFudC1iYXNlbGluZT0ibWlkZGxlIj5JbWFnZSBOb3QgR2VuZXJhdGVkPC90ZXh0Pjwvc3ZnPg=="
 
         image_asset = ImageAsset(
             asset_id=asset_id,
-            url=mock_url,
+            url=image_url,  # Now a real base64 data URI!
             generation_params=generation_params,
             description=f"{product_name} hero image - {theme} theme, variation {variation}",
         )

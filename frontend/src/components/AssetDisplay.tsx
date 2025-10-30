@@ -111,9 +111,9 @@ function ArtDirectorAssets({ data }: { data: any[] }) {
             )}
             onClick={() => setSelectedImage(i)}
           >
-            <img src={image.url} alt={image.prompt} className="w-full aspect-video object-cover" />
+            <img src={image.url} alt={image.description || 'Hero image'} className="w-full aspect-video object-cover" />
             <div className="p-3 bg-zinc-800">
-              <div className="text-xs text-zinc-400">{image.prompt}</div>
+              <div className="text-xs text-zinc-400">{image.description || image.generation_params?.prompt || 'Hero image'}</div>
             </div>
           </div>
         ))}
@@ -132,17 +132,23 @@ function VideoProducerAssets({ data }: { data: any[] }) {
         🎬 Social Media Video
       </h3>
 
-      {assetData.video_url && (
+      {assetData.video?.url && (
         <video
-          src={assetData.video_url}
+          src={assetData.video.url}
           controls
           className="w-full rounded-lg border border-zinc-700"
         />
       )}
 
-      {assetData.prompt && (
+      {assetData.video?.generation_params?.prompt && (
         <div className="mt-4 text-sm text-zinc-400">
-          <span className="font-medium">Prompt:</span> {assetData.prompt}
+          <span className="font-medium">Prompt:</span> {assetData.video.generation_params.prompt}
+        </div>
+      )}
+
+      {assetData.critique_notes && (
+        <div className="mt-2 text-sm text-zinc-500">
+          <span className="font-medium">Critique Notes:</span> {assetData.critique_notes}
         </div>
       )}
     </div>

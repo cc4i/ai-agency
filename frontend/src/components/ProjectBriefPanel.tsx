@@ -34,8 +34,8 @@ export function ProjectBriefPanel() {
 
   if (!brief) {
     return (
-      <div className="w-80 border-l border-zinc-800 bg-zinc-950 p-6">
-        <div className="text-zinc-500">No project loaded</div>
+      <div className="w-80 border-r border-zinc-800 bg-zinc-950 p-6">
+        <div className="text-zinc-500">No Project loaded</div>
       </div>
     );
   }
@@ -43,7 +43,7 @@ export function ProjectBriefPanel() {
   const isFieldHighlighted = (field: string) => highlightedFields.has(field);
 
   return (
-    <div className="w-80 border-l border-zinc-800 bg-zinc-950 p-6 overflow-y-auto">
+    <div className="w-80 border-r border-zinc-800 bg-zinc-950 p-6 overflow-y-auto">
       <h2 className="text-lg font-semibold text-white mb-6">Project Brief</h2>
 
       <div className="space-y-4">
