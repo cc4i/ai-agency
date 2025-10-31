@@ -373,6 +373,15 @@ class GeminiLiveConnection:
                     },
                     "required": ["image_asset_id", "product_name", "slogan"]
                 }
+            },
+            {
+                "name": "check_workflow_status",
+                "description": "Check current campaign progress and get recommendation for next step. Call this when user asks to 'continue', 'resume', 'what's next', or 'where are we'. Returns current state of slogans, images, and completed agents.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
             }
         ]
 
@@ -388,10 +397,55 @@ class GeminiLiveConnection:
 
         Your role is to:
         1. CONTINUOUSLY UPDATE the Project Brief as you learn information from the conversation
-        2. Delegate tasks to specialist agents ONLY when the user requests them
-        3. Provide status updates as agents work
-        4. Evaluate agent outputs and present them to the user
-        5. Guide the conversation through campaign creation
+        2. CALL check_workflow_status() before delegating tasks to check for existing work
+        3. ASK THE USER if they want to use existing work or regenerate when work already exists
+        4. Delegate tasks to specialist agents ONLY when user explicitly requests regeneration OR work doesn't exist
+        5. Provide status updates as agents work
+        6. Evaluate agent outputs and present them to the user
+        7. Guide the conversation through campaign creation
+
+        IMPORTANT: STATE AWARENESS - CHECK BEFORE EXECUTING
+
+        Before calling any agent function (create_campaign_strategy, generate_hero_images, etc.), YOU MUST:
+        1. CALL check_workflow_status() to see if work already exists
+        2. Inform the user of existing results from the status check
+        3. Ask if they want to USE EXISTING or REGENERATE
+        4. ONLY call the agent function if user explicitly wants to regenerate OR if work doesn't exist
+
+        Examples of state-aware responses:
+
+        User: "Can you create slogans?"
+        → CALL check_workflow_status() first
+        → If slogans exist: "I see we already have 5 slogans from a previous session:
+                            1. Run Your Future
+                            2. Step Into Tomorrow
+                            3. Motion Meets Intelligence
+                            4. Stride Into the Future
+                            5. Your Pace, Your Power
+
+                            Would you like to:
+                            A) Use these existing slogans and move forward
+                            B) Generate new slogans
+
+                            Let me know!"
+        → If NO slogans: "I'll call our Strategy Agent to create slogans for you now." [THEN call create_campaign_strategy]
+
+        User: "Can you create images?"
+        → CALL check_workflow_status() first
+        → If slogan selected AND images exist: "We already have 4 hero images generated with the slogan 'Run Your Future'. Would you like to review them or generate new ones?"
+        → If slogan selected AND no images: "Great! I'll call our Art Director to create hero images with your selected slogan." [THEN call generate_hero_images]
+        → If NO slogan selected: "First, I need to know which slogan to use. Looking at our slogans, which one do you prefer?"
+
+        User: "Let's continue where we left off"
+        → CALL check_workflow_status()
+        → Example response: "Looking at our progress:
+                            ✅ Product brief complete
+                            ✅ 5 slogans generated (you selected: 'Run Your Future')
+                            ✅ 4 hero images created
+                            ❌ Video not yet created
+                            ❌ Landing page not yet created
+
+                            Would you like me to create a video from one of the images?"
 
         CRITICAL WORKFLOW - FOLLOW THIS ORDER:
 
@@ -473,6 +527,101 @@ class GeminiLiveConnection:
 
         Always be conversational, proactive with updates, and ready to continue the dialogue.
         """
+
+    async def _check_workflow_state(self) -> Dict[str, Any]:
+        """
+        Check current workflow state and determine next steps.
+
+        Returns:
+            {
+                "has_slogans": bool,
+                "slogans_count": int,
+                "slogans": List[str],
+                "selected_slogan": Optional[str],
+                "has_images": bool,
+                "images_count": int,
+                "selected_image": Optional[str],
+                "completed_agents": List[str],
+                "next_recommended_step": str,
+                "resume_message": str,
+            }
+        """
+        brief = await redis_client.get_project_brief(self.project_id)
+        if not brief:
+            return {
+                "has_slogans": False,
+                "slogans_count": 0,
+                "slogans": [],
+                "selected_slogan": None,
+                "has_images": False,
+                "images_count": 0,
+                "selected_image": None,
+                "completed_agents": [],
+                "next_recommended_step": "create_brief",
+                "resume_message": "No project brief found. Start by gathering product information."
+            }
+
+        # Check strategy state
+        has_slogans = len(brief.slogans) > 0
+        selected_slogan = brief.selected_slogan
+
+        # Check art state
+        has_images = len(brief.hero_images) > 0
+        selected_image = brief.selected_image
+
+        # Check completed assets
+        completed_agents = list(brief.completed_assets.keys())
+
+        # Determine next step
+        if not has_slogans:
+            next_step = "create_strategy"
+        elif not selected_slogan:
+            next_step = "select_slogan"
+        elif not has_images:
+            next_step = "generate_images"
+        elif not selected_image:
+            next_step = "select_image"
+        elif "video_producer" not in completed_agents:
+            next_step = "generate_video"
+        elif "web_dev" not in completed_agents:
+            next_step = "generate_landing_page"
+        else:
+            next_step = "campaign_complete"
+
+        # Build resume message
+        status_lines = []
+        status_lines.append("Current Progress:")
+        status_lines.append(f"{'✅' if has_slogans else '❌'} Strategy: {len(brief.slogans)} slogans")
+        if has_slogans and selected_slogan:
+            status_lines.append(f"✅ Selected slogan: '{selected_slogan}'")
+        elif has_slogans:
+            status_lines.append("❌ No slogan selected yet")
+
+        status_lines.append(f"{'✅' if has_images else '❌'} Images: {len(brief.hero_images)} hero images")
+        if has_images and selected_image:
+            status_lines.append(f"✅ Selected image: {selected_image.asset_id if selected_image else 'None'}")
+        elif has_images:
+            status_lines.append("❌ No image selected yet")
+
+        status_lines.append(f"{'✅' if 'video_producer' in completed_agents else '❌'} Video created")
+        status_lines.append(f"{'✅' if 'audio_team' in completed_agents else '❌'} Audio created")
+        status_lines.append(f"{'✅' if 'web_dev' in completed_agents else '❌'} Landing page created")
+        status_lines.append(f"\nNext step: {next_step}")
+
+        resume_message = "\n".join(status_lines)
+
+        return {
+            "has_slogans": has_slogans,
+            "slogans_count": len(brief.slogans),
+            "slogans": brief.slogans,
+            "selected_slogan": selected_slogan,
+            "has_images": has_images,
+            "images_count": len(brief.hero_images),
+            "selected_image": selected_image.asset_id if selected_image else None,
+            "completed_agents": completed_agents,
+            "next_recommended_step": next_step,
+            "resume_message": resume_message,
+        }
 
     async def _initialize_project_brief(self) -> None:
         """
@@ -869,8 +1018,11 @@ class GeminiLiveConnection:
                             time_left = getattr(response.go_away, 'time_left', None)
                             if time_left is not None:
                                 self._log("warning", f"⏰ Session expiring in {time_left}s - will reconnect with resumption...")
-                                # Schedule reconnection before expiration
-                                asyncio.create_task(self._extend_session())
+                                # Extend session synchronously and break from receive loop
+                                await self._extend_session()
+                                # Break from receive loop to restart with new session
+                                self._log("info", "🔄 Breaking receive loop to use new session")
+                                break
 
                         # Handle server content (audio and/or text)
                         if hasattr(response, 'server_content') and response.server_content:
@@ -949,18 +1101,26 @@ class GeminiLiveConnection:
         except Exception as e:
             error_msg = str(e)
 
+            # Handle normal WebSocket close during session extension
+            if "ConnectionClosedOK" in str(type(e).__name__) or "1000 (OK)" in error_msg:
+                self._log("info", "🔄 WebSocket closed normally (likely during session extension)")
+                # Don't break the main loop - let it continue and restart with the new session
+                # Just continue the while loop without setting is_connected = False
+                pass
+
             # Log different types of errors appropriately
-            if "1011" in error_msg and "internal error" in error_msg.lower():
+            elif "1011" in error_msg and "internal error" in error_msg.lower():
                 self._log("error", f"✗ Gemini Live server error (1011): {error_msg}")
                 self._log("warning", "⚠️ This is a server-side error from Gemini Live API")
                 self._log("warning", "⚠️ Possible causes: function call triggered server bug, session timeout, or service issue")
+                # If a major error occurs, break the main loop
+                self.is_connected = False
             else:
                 self._log("error", f"✗ Gemini to Frontend error: {e}")
-
-            import traceback
-            self._log("error", f"Traceback: {traceback.format_exc()}")
-            # If a major error occurs, break the main loop
-            self.is_connected = False
+                import traceback
+                self._log("error", f"Traceback: {traceback.format_exc()}")
+                # If a major error occurs, break the main loop
+                self.is_connected = False
 
     async def _safe_send_to_frontend(self, message: dict) -> bool:
         """
@@ -1098,7 +1258,7 @@ class GeminiLiveConnection:
             }
 
         elif agent_id == "art_director":
-            # Art Director: Strip out base64 image URLs, keep metadata only
+            # Art Director: Strip out base64 image URLs and generation_params, keep metadata only
             images = result.get("images", [])
             return {
                 "status": "completed",
@@ -1107,7 +1267,8 @@ class GeminiLiveConnection:
                     {
                         "asset_id": img.get("asset_id"),
                         "description": img.get("description"),
-                        # REMOVE url field - it contains massive base64 data
+                        # REMOVE url field - it contains massive base64 data URI (can be 1-2MB)
+                        # REMOVE generation_params - it contains large prompt text
                     }
                     for img in images
                 ],
@@ -1115,15 +1276,16 @@ class GeminiLiveConnection:
             }
 
         elif agent_id == "video_producer":
-            # Video Producer: Strip out video URL, keep metadata only
+            # Video Producer: Strip out video URL and generation_params (contains reference_image base64), keep metadata only
             video = result.get("video", {})
             return {
                 "status": "completed",
                 "video": {
                     "asset_id": video.get("asset_id"),
-                    "description": video.get("description"),
-                    "duration": video.get("duration"),
+                    "duration_seconds": video.get("duration_seconds"),
+                    "revision_number": video.get("revision_number", 0),
                     # REMOVE url field - it may contain large data
+                    # REMOVE generation_params - it contains reference_image base64 data URI
                 },
                 "revision_count": len(result.get("revision_history", [])),
                 "critique_notes": result.get("critique_notes", "")[:200] if result.get("critique_notes") else None
@@ -1211,11 +1373,102 @@ class GeminiLiveConnection:
                     updates["key_features"] = task.get("key_features")
                     changed_fields.append("key_features")
 
+                # Save slogans and personas from strategy agent
+                if "slogans" in result:
+                    updates["slogans"] = result.get("slogans", [])
+                    changed_fields.append("slogans")
+                    self._log("info", f"📋 Saved {len(result.get('slogans', []))} slogans to brief")
+
+                if "personas" in result:
+                    from app.models.brief import CustomerPersona
+                    personas_data = result.get("personas", [])
+                    # Convert dict personas to CustomerPersona objects
+                    personas = []
+                    for p_data in personas_data:
+                        if isinstance(p_data, dict):
+                            personas.append(CustomerPersona(**p_data))
+                        else:
+                            personas.append(p_data)
+                    updates["personas"] = personas
+                    changed_fields.append("personas")
+                    self._log("info", f"📋 Saved {len(personas)} personas to brief")
+
+                # Mark strategy as completed
+                if brief.completed_assets is None:
+                    brief.completed_assets = {}
+                brief.completed_assets["strategy"] = {
+                    "slogans_count": len(result.get("slogans", [])),
+                    "personas_count": len(result.get("personas", [])),
+                    "timestamp": datetime.utcnow().isoformat(),
+                }
+                updates["completed_assets"] = brief.completed_assets
+                changed_fields.append("completed_assets")
+
             elif agent_id == "art_director":
                 # Art director uses selected slogan
                 if task.get("slogan") and brief.selected_slogan != task.get("slogan"):
                     updates["selected_slogan"] = task.get("slogan")
                     changed_fields.append("selected_slogan")
+
+                # Save hero images from art director
+                if "images" in result:
+                    from app.models.brief import ImageAsset
+                    images_data = result.get("images", [])
+                    # Convert dict images to ImageAsset objects
+                    hero_images = []
+                    for img_data in images_data:
+                        if isinstance(img_data, dict):
+                            hero_images.append(ImageAsset(**img_data))
+                        else:
+                            hero_images.append(img_data)
+                    updates["hero_images"] = hero_images
+                    changed_fields.append("hero_images")
+                    self._log("info", f"📋 Saved {len(hero_images)} hero images to brief")
+
+                # Mark art director as completed
+                if brief.completed_assets is None:
+                    brief.completed_assets = {}
+                brief.completed_assets["art_director"] = {
+                    "images_count": len(result.get("images", [])),
+                    "slogan": task.get("slogan"),
+                    "timestamp": datetime.utcnow().isoformat(),
+                }
+                updates["completed_assets"] = brief.completed_assets
+                changed_fields.append("completed_assets")
+
+            elif agent_id == "video_producer":
+                # Mark video producer as completed
+                if brief.completed_assets is None:
+                    brief.completed_assets = {}
+                brief.completed_assets["video_producer"] = {
+                    "video_asset_id": result.get("video", {}).get("asset_id"),
+                    "timestamp": datetime.utcnow().isoformat(),
+                }
+                updates["completed_assets"] = brief.completed_assets
+                changed_fields.append("completed_assets")
+
+            elif agent_id == "audio_team":
+                # Mark audio team as completed
+                if brief.completed_assets is None:
+                    brief.completed_assets = {}
+                brief.completed_assets["audio_team"] = {
+                    "jingle_asset_id": result.get("jingle", {}).get("asset_id"),
+                    "podcast_asset_id": result.get("podcast_ad", {}).get("asset_id"),
+                    "timestamp": datetime.utcnow().isoformat(),
+                }
+                updates["completed_assets"] = brief.completed_assets
+                changed_fields.append("completed_assets")
+
+            elif agent_id == "web_dev":
+                # Mark web dev as completed
+                if brief.completed_assets is None:
+                    brief.completed_assets = {}
+                brief.completed_assets["web_dev"] = {
+                    "code_asset_id": result.get("code", {}).get("asset_id"),
+                    "timestamp": datetime.utcnow().isoformat(),
+                }
+                updates["completed_assets"] = brief.completed_assets
+                changed_fields.append("completed_assets")
 
             # Apply updates if any
             if updates:
@@ -1372,6 +1625,11 @@ class GeminiLiveConnection:
             # Create a compact summary for Gemini (without large base64 image data)
             result_summary = self._create_result_summary(agent_id, result)
 
+            # Log the size of the summary for debugging
+            import sys
+            summary_size = sys.getsizeof(json.dumps(result_summary))
+            self._log("info", f"📊 Result summary size for {agent_id}: {summary_size} bytes ({summary_size/1024:.2f} KB)")
+
             # Publish result to Redis Pub/Sub channel for the session
             channel_name = f"agent_results:{session_id}"
             result_message = {
@@ -1380,6 +1638,10 @@ class GeminiLiveConnection:
                 "result": result_summary,  # Use summary instead of full result
                 "status": "completed",
             }
+
+            # Log total message size
+            message_size = sys.getsizeof(json.dumps(result_message))
+            self._log("info", f"📊 Total result message size: {message_size} bytes ({message_size/1024:.2f} KB)")
 
             await redis_client.client.publish(  # type: ignore
                 channel_name,
@@ -1463,8 +1725,21 @@ class GeminiLiveConnection:
                 self._log("info", f"🔧 Dispatching agent for function: {function_name} (Call ID: {call_id}) with args: {function_args}")
 
                 # Route to appropriate agent. This now runs in the background.
-                # The result will be sent back to Gemini by a separate listener.
-                await self._execute_agent_function(function_name, function_args, call_id)
+                # For sync agents, we send the result immediately.
+                # For async agents, we send an acknowledgment now and the actual result later via listener.
+                result = await self._execute_agent_function(function_name, function_args, call_id)
+
+                # Send immediate response to Gemini (acknowledgment for async, actual result for sync)
+                if result and self.gemini_session:
+                    await self.gemini_session.send_tool_response(
+                        function_responses=[
+                            {
+                                "id": call_id,
+                                "response": result
+                            }
+                        ]
+                    )
+                    self._log("info", f"📤 Sent immediate response for {function_name} (Call ID: {call_id})")
 
         except Exception as e:
             self._log("error", f"✗ Tool call error: {e}")
@@ -1530,7 +1805,16 @@ class GeminiLiveConnection:
             self._log("info", f"🎯 Function args: {args}")
             self._log("info", f"🎯 Call ID: {call_id_for_task}")
 
-            if function_name == "update_project_brief":
+            if function_name == "check_workflow_status":
+                self._log("info", "📊 Matched check_workflow_status function")
+
+                # Check workflow state and return to Gemini
+                state = await self._check_workflow_state()
+
+                self._log("info", f"📊 Workflow state: {state['next_recommended_step']}")
+                return state
+
+            elif function_name == "update_project_brief":
                 self._log("info", "📋 Matched update_project_brief function")
 
                 # Update the project brief with any provided fields
@@ -1588,8 +1872,10 @@ class GeminiLiveConnection:
                 self._log("info", "🎯 Matched create_campaign_strategy function")
                 self._log("info", f"🎯 Function args: {args}")
 
-                # Get current brief to fill in missing parameters
+                # Get brief for fallback values (but always execute fresh when function is called)
                 brief = await redis_client.get_project_brief(self.project_id)
+
+                self._log("info", "🎯 Executing Strategy Agent (always fresh when explicitly requested)")
 
                 # Build task from args, with fallback to project brief
                 task = {
@@ -1626,6 +1912,8 @@ class GeminiLiveConnection:
             elif function_name == "generate_hero_images":
                 self._log("info", "🎨 Matched generate_hero_images function")
                 self._log("info", f"🎨 Function args: {args}")
+
+                self._log("info", "🎨 Executing Art Director Agent (always fresh when explicitly requested)")
 
                 # Build task from args
                 task = {
@@ -1699,6 +1987,8 @@ class GeminiLiveConnection:
                 self._log("info", f"🎬 Built task for: {task.get('product_name')}, image: {image_summary}")
 
                 # Execute agent in background and publish result to Redis
+                # Use None for call_id so the listener doesn't send the result back to Gemini
+                # (we're sending an immediate acknowledgment instead)
                 asyncio.create_task(
                     self._execute_agent_with_result_publishing(
                         orchestrator=orchestrator,
@@ -1706,12 +1996,16 @@ class GeminiLiveConnection:
                         task=task,
                         project_id=self.project_id,
                         session_id=session_id,
-                        call_id=call_id_for_task,
+                        call_id=None,  # Don't send result back to Gemini via listener
                     )
                 )
 
                 self._log("info", f"✓ Video Producer Agent dispatched")
-                return # No direct result returned
+                # Return immediate acknowledgment (will be sent to Gemini in _handle_tool_call_genai)
+                return {
+                    "status": "dispatched",
+                    "message": "Video Producer Agent is creating your social media video. This will take about 60-90 seconds. I'll let you know when it's ready!"
+                }
 
             elif function_name == "generate_audio_assets":
                 self._log("info", "🎵 Matched generate_audio_assets function")

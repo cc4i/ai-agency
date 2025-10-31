@@ -430,7 +430,7 @@ class VeoClient:
         duration_seconds: int = 8,
     ) -> bytes:
         """
-        Generate video using Veo 3.1 via REST API.
+        Generate video using Veo 3.1 via REST API (long-running operation).
 
         Args:
             prompt: Video generation prompt
@@ -439,6 +439,10 @@ class VeoClient:
 
         Returns:
             Generated video as bytes
+
+        Raises:
+            ValueError: Invalid input parameters
+            RuntimeError: Video generation failed
         """
         try:
             logger.info(f"Veo: Generating {duration_seconds}s video with prompt: {prompt[:50]}...")
@@ -481,11 +485,20 @@ class VeoClient:
                 }
 
             # Build parameters (Veo 3.1 format)
+            # Include storageUri to have Veo save videos to GCS instead of returning base64
+            # This is more efficient (no 5-10MB base64 strings in response)
+            import uuid
+            video_id = f"veo_{uuid.uuid4().hex[:12]}"
+            storage_uri = f"gs://{settings.gcs_bucket_name}/veo_videos/{video_id}"
+
             parameters = {
                 "sampleCount": 1,
                 "durationSeconds": duration_seconds,
                 "generateAudio": False,  # Required for Veo 3.1
+                "storageUri": storage_uri,  # Save to GCS instead of returning base64
             }
+
+            logger.info(f"Veo: Requesting video save to: {storage_uri}")
 
             # Make direct REST API call to Vertex AI
             from google.auth import default
@@ -497,9 +510,10 @@ class VeoClient:
             if not credentials.valid:
                 credentials.refresh(Request())
 
-            # Build API endpoint
+            # Build API endpoint for long-running operation
             location = settings.google_cloud_location
-            endpoint = f"https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/publishers/google/models/{self.model_name}:predict"
+            endpoint = f"https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/publishers/google/models/{self.model_name}:predictLongRunning"
+            logger.info(f"Veo: Using endpoint: {endpoint}")
 
             # Build request body (Veo 3.1 format)
             request_body = {
@@ -507,12 +521,13 @@ class VeoClient:
                 "parameters": parameters
             }
 
-            # Make request
+            # Make initial request to start operation
             headers = {
                 "Authorization": f"Bearer {credentials.token}",
                 "Content-Type": "application/json"
             }
 
+            logger.info("Veo: Starting long-running video generation operation...")
             async with httpx.AsyncClient(timeout=300.0) as http_client:
                 response = await http_client.post(
                     endpoint,
@@ -520,30 +535,220 @@ class VeoClient:
                     headers=headers
                 )
                 response.raise_for_status()
-                result = response.json()
+                operation_response = response.json()
 
-            # Extract video bytes from response
-            if "predictions" in result and len(result["predictions"]) > 0:
-                prediction = result["predictions"][0]
+            # Extract operation name
+            if "name" not in operation_response:
+                raise RuntimeError(f"No operation name in response: {operation_response}")
 
-                # Video data is in bytesBase64Encoded field
-                if "bytesBase64Encoded" in prediction:
-                    video_b64 = prediction["bytesBase64Encoded"]
-                    video_bytes = base64.b64decode(video_b64)
-                    logger.info(f"Veo: Successfully generated video ({len(video_bytes)} bytes)")
-                    return video_bytes
-                else:
-                    logger.error(f"Veo: No bytesBase64Encoded in prediction: {prediction.keys()}")
-                    return b""
-            else:
-                logger.warning("No predictions in Veo response")
-                return b""
+            operation_name = operation_response["name"]
+            logger.info(f"Veo: Operation started: {operation_name}")
+
+            # Poll operation until complete
+            video_bytes = await self._poll_operation(operation_name, credentials, project, location)
+
+            logger.info(f"Veo: Successfully generated video ({len(video_bytes)} bytes)")
+            return video_bytes
 
         except Exception as e:
             logger.error(f"Veo error: {e}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
             raise
+
+    async def _poll_operation(
+        self,
+        operation_name: str,
+        credentials,
+        project: str,
+        location: str,
+        max_wait_seconds: int = 300,
+        poll_interval_seconds: int = 5,
+    ) -> bytes:
+        """
+        Poll long-running operation until complete and return video bytes.
+
+        Args:
+            operation_name: Full operation name from initial response
+            credentials: Google auth credentials
+            project: GCP project ID
+            location: GCP location
+            max_wait_seconds: Maximum time to wait for completion (default 5 minutes)
+            poll_interval_seconds: Time between polling requests (default 5 seconds)
+
+        Returns:
+            Generated video as bytes
+
+        Raises:
+            RuntimeError: Operation failed or timed out
+        """
+        import httpx
+        import asyncio
+        from datetime import datetime, timedelta
+
+        # Build fetch operation endpoint
+        fetch_endpoint = f"https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/publishers/google/models/{self.model_name}:fetchPredictOperation"
+
+        headers = {
+            "Authorization": f"Bearer {credentials.token}",
+            "Content-Type": "application/json"
+        }
+
+        start_time = datetime.now()
+        deadline = start_time + timedelta(seconds=max_wait_seconds)
+        poll_count = 0
+
+        logger.info(f"Veo: Polling operation (max wait: {max_wait_seconds}s, interval: {poll_interval_seconds}s)")
+
+        async with httpx.AsyncClient(timeout=60.0) as http_client:
+            while datetime.now() < deadline:
+                poll_count += 1
+
+                # Refresh credentials if needed
+                if not credentials.valid:
+                    from google.auth.transport.requests import Request
+                    credentials.refresh(Request())
+                    headers["Authorization"] = f"Bearer {credentials.token}"
+
+                # Fetch operation status
+                request_body = {"operationName": operation_name}
+
+                try:
+                    response = await http_client.post(
+                        fetch_endpoint,
+                        json=request_body,
+                        headers=headers
+                    )
+                    response.raise_for_status()
+                    result = response.json()
+                except httpx.HTTPError as e:
+                    logger.warning(f"Veo: Poll #{poll_count} failed: {e}, retrying...")
+                    await asyncio.sleep(poll_interval_seconds)
+                    continue
+
+                # Check if operation is complete
+                if result.get("done"):
+                    logger.info(f"Veo: Operation complete after {poll_count} polls ({(datetime.now() - start_time).total_seconds():.1f}s)")
+
+                    # Check for errors
+                    if "error" in result:
+                        error_msg = result["error"].get("message", str(result["error"]))
+                        raise RuntimeError(f"Veo operation failed: {error_msg}")
+
+                    # Debug: Log full response structure
+                    logger.info(f"Veo: Full response keys: {result.keys()}")
+                    if "response" in result:
+                        logger.info(f"Veo: Response content keys: {result['response'].keys()}")
+
+                    # Extract video from response
+                    # Response structure: {"done": true, "response": {"videos": [{"video": {...}}]}}
+                    if "response" in result:
+                        response_data = result["response"]
+
+                        # Check for videos list (new format)
+                        if "videos" in response_data and len(response_data["videos"]) > 0:
+                            video_entry = response_data["videos"][0]
+                            logger.info(f"Veo: Video entry keys: {video_entry.keys()}")
+
+                            # Try to extract video data - check multiple possible structures
+                            video_obj = None
+
+                            # NEW FORMAT (2025-01): Video data directly in entry
+                            if "gcsUri" in video_entry or "bytesBase64Encoded" in video_entry:
+                                logger.info("Veo: Using direct video entry format (2025-01)")
+                                video_obj = video_entry
+                            # OLD FORMAT: Video data wrapped in "video" field
+                            elif "video" in video_entry:
+                                logger.info("Veo: Using wrapped video format (legacy)")
+                                video_obj = video_entry["video"]
+                                logger.info(f"Veo: Video object keys: {video_obj.keys()}")
+
+                            if video_obj:
+                                # Video should be in GCS (since we provided storageUri)
+                                # But fallback to base64 if GCS URI not present
+                                if "gcsUri" in video_obj:
+                                    gcs_uri = video_obj["gcsUri"]
+                                    logger.info(f"Veo: Downloading video from GCS: {gcs_uri}")
+                                    video_bytes = await self._download_from_gcs(gcs_uri)
+                                    return video_bytes
+                                elif "bytesBase64Encoded" in video_obj:
+                                    # Fallback: base64 response (shouldn't happen with storageUri)
+                                    logger.warning("Veo: Received base64 response despite storageUri request")
+                                    video_b64 = video_obj["bytesBase64Encoded"]
+                                    video_bytes = base64.b64decode(video_b64)
+                                    logger.info(f"Veo: Decoded video from base64 ({len(video_bytes)} bytes)")
+                                    return video_bytes
+                                else:
+                                    raise RuntimeError(f"No video data in video object: {video_obj.keys()}")
+                            else:
+                                raise RuntimeError(f"No video data found in entry: {video_entry.keys()}")
+
+                        # Fallback: Check for old predictions format
+                        elif "predictions" in response_data:
+                            logger.warning("Veo: Using legacy 'predictions' format")
+                            predictions = response_data["predictions"]
+                            if len(predictions) > 0:
+                                prediction = predictions[0]
+
+                                if "bytesBase64Encoded" in prediction:
+                                    video_b64 = prediction["bytesBase64Encoded"]
+                                    video_bytes = base64.b64decode(video_b64)
+                                    return video_bytes
+                                elif "gcsUri" in prediction:
+                                    gcs_uri = prediction["gcsUri"]
+                                    logger.info(f"Veo: Downloading video from GCS: {gcs_uri}")
+                                    video_bytes = await self._download_from_gcs(gcs_uri)
+                                    return video_bytes
+                                else:
+                                    raise RuntimeError(f"No video data in prediction: {prediction.keys()}")
+
+                        raise RuntimeError(f"No 'videos' or 'predictions' in response: {response_data.keys()}")
+
+                    raise RuntimeError(f"No 'response' in operation result: {result.keys()}")
+
+                # Operation still running
+                elapsed = (datetime.now() - start_time).total_seconds()
+                logger.info(f"Veo: Poll #{poll_count} - operation still running ({elapsed:.1f}s elapsed)")
+                await asyncio.sleep(poll_interval_seconds)
+
+        # Timeout
+        raise RuntimeError(f"Veo operation timed out after {max_wait_seconds}s")
+
+    async def _download_from_gcs(self, gcs_uri: str) -> bytes:
+        """
+        Download video from Google Cloud Storage.
+
+        Args:
+            gcs_uri: GCS URI (e.g., gs://bucket-name/path/to/video.mp4)
+
+        Returns:
+            Video bytes
+        """
+        try:
+            # Parse GCS URI: gs://bucket-name/path/to/file
+            if not gcs_uri.startswith("gs://"):
+                raise ValueError(f"Invalid GCS URI: {gcs_uri}")
+
+            parts = gcs_uri[5:].split("/", 1)
+            bucket_name = parts[0]
+            blob_name = parts[1] if len(parts) > 1 else ""
+
+            logger.info(f"Veo: Downloading from GCS bucket '{bucket_name}', blob '{blob_name}'")
+
+            # Use GCS client to download
+            from google.cloud import storage
+            storage_client = storage.Client()
+            bucket = storage_client.bucket(bucket_name)
+            blob = bucket.blob(blob_name)
+
+            video_bytes = blob.download_as_bytes()
+            logger.info(f"Veo: Downloaded {len(video_bytes)} bytes from GCS")
+
+            return video_bytes
+
+        except Exception as e:
+            logger.error(f"Error downloading from GCS: {e}")
+            raise RuntimeError(f"Failed to download video from GCS: {e}")
 
 
 class LyriaClient:
@@ -555,39 +760,111 @@ class LyriaClient:
         self.location = settings.google_cloud_location
 
     async def generate_music(
-        self, prompt: str, duration_seconds: int = 10
+        self, prompt: str, duration_seconds: int = 10, negative_prompt: str = None, seed: int = None
     ) -> bytes:
         """
-        Generate music using Lyria/MusicLM.
+        Generate music using Lyria (lyria-002 model).
 
         Args:
-            prompt: Music generation prompt
-            duration_seconds: Music duration
+            prompt: Music generation prompt (US English)
+            duration_seconds: Music duration (note: Lyria generates 30s fixed)
+            negative_prompt: Optional prompt describing elements to exclude
+            seed: Optional seed for deterministic output (incompatible with sample_count)
 
         Returns:
-            Generated audio as bytes
+            Generated audio as bytes (WAV format, 48 kHz)
         """
         try:
-            logger.info(f"Lyria: Generating {duration_seconds}s music with prompt: {prompt[:50]}...")
+            logger.info(f"Lyria: Generating music with prompt: {prompt[:100]}...")
 
-            # Note: MusicLM/Lyria API not yet publicly available via genai SDK
-            # Placeholder implementation for when API becomes available
-            logger.warning("Lyria/MusicLM API not yet publicly available. Returning placeholder.")
+            # Import Vertex AI Prediction API
+            from google.cloud import aiplatform
+            from google.protobuf import json_format
+            from google.protobuf.struct_pb2 import Value
+            import base64
 
-            # Future implementation would use genai client:
-            # response = await self.client.aio.models.generate_audio(
-            #     model="lyria-music-generation",
-            #     prompt=prompt,
-            #     config={"duration_seconds": duration_seconds}
-            # )
-            # return response.audio.data
+            # Initialize Vertex AI
+            aiplatform.init(project=self.project_id, location=self.location)
 
-            # Return empty audio bytes for now
-            return b""
+            # Prepare request payload
+            instance = {
+                "prompt": prompt
+            }
+            if negative_prompt:
+                instance["negative_prompt"] = negative_prompt
+            if seed is not None:
+                instance["seed"] = seed
+
+            # Parameters (sample_count if no seed)
+            parameters = {}
+            if seed is None:
+                parameters["sample_count"] = 1
+
+            logger.info(f"Lyria: Calling lyria-002 model in {self.location}...")
+
+            # Create endpoint URL
+            endpoint = f"projects/{self.project_id}/locations/{self.location}/publishers/google/models/lyria-002"
+
+            # Use PredictionServiceClient for synchronous predict
+            from google.cloud.aiplatform_v1.services.prediction_service import PredictionServiceClient
+
+            # Create client
+            client = PredictionServiceClient(
+                client_options={"api_endpoint": f"{self.location}-aiplatform.googleapis.com"}
+            )
+
+            # Prepare instances and parameters as Value objects
+            instances_value = [json_format.ParseDict(instance, Value())]
+            parameters_value = json_format.ParseDict(parameters, Value()) if parameters else None
+
+            # Call predict API synchronously (in executor to avoid blocking)
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: client.predict(
+                    endpoint=endpoint,
+                    instances=instances_value,
+                    parameters=parameters_value
+                )
+            )
+
+            # Extract audio from response
+            if not response.predictions:
+                logger.warning("Lyria: No predictions in response")
+                return b""
+
+            # Get first prediction
+            prediction = response.predictions[0]
+
+            # Extract audioContent (base64-encoded WAV)
+            audio_content_b64 = None
+            if hasattr(prediction, 'audioContent'):
+                audio_content_b64 = prediction.audioContent
+            elif isinstance(prediction, dict) and 'audioContent' in prediction:
+                audio_content_b64 = prediction['audioContent']
+            else:
+                # Try to access as struct
+                try:
+                    audio_content_b64 = prediction.get('audioContent')
+                except:
+                    logger.error(f"Lyria: Could not extract audioContent from prediction: {type(prediction)}")
+                    return b""
+
+            if not audio_content_b64:
+                logger.warning("Lyria: No audioContent in prediction")
+                return b""
+
+            # Decode base64 to bytes
+            audio_bytes = base64.b64decode(audio_content_b64)
+            logger.info(f"Lyria: Generated {len(audio_bytes)} bytes of music (WAV, 48kHz, 30s)")
+
+            return audio_bytes
 
         except Exception as e:
-            logger.error(f"Lyria music generation error: {e}")
-            raise
+            logger.error(f"Lyria music generation error: {e}", exc_info=True)
+            # Return empty bytes instead of raising to allow graceful degradation
+            logger.warning("Lyria: Returning empty bytes due to error")
+            return b""
 
     async def synthesize_speech(self, text: str, voice: str = "en-US-Studio-O") -> bytes:
         """

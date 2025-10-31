@@ -16,6 +16,7 @@ from app.models.assets import (
     TranscriptionAsset,
 )
 from app.services.google_ai_client import chirp_client, lyria_client
+from app.services.storage_client import storage_client
 
 logger = logging.getLogger(__name__)
 
@@ -174,19 +175,35 @@ This will resonate with {product_category} enthusiasts and create emotional conn
         - Ending: Memorable closing flourish (2-3 seconds)
         """
 
-        # Generate music using Lyria
+        # Generate music using Lyria (returns WAV format, 48kHz, 30s fixed duration)
         audio_data = await lyria_client.generate_music(
-            prompt=prompt, duration_seconds=10
+            prompt=prompt,
+            duration_seconds=10  # Note: Lyria ignores this and generates 30s
         )
 
-        # In production, upload to GCS
         asset_id = f"jingle_{uuid.uuid4().hex[:12]}"
-        mock_url = f"gs://ai-agency-demo/audio/{asset_id}.mp3"
+
+        # Upload to GCS if audio data was generated
+        if audio_data and len(audio_data) > 0:
+            logger.info(f"Uploading jingle to GCS ({len(audio_data)} bytes, WAV format)...")
+            asset_id, jingle_url = await storage_client.upload_audio(
+                audio_data=audio_data,
+                asset_id=asset_id,
+                content_type="audio/wav",  # Lyria outputs WAV, not MP3
+            )
+            logger.info(f"Jingle uploaded to: {jingle_url}")
+            # Lyria generates 30s fixed duration
+            duration = 30.0
+        else:
+            # Lyria API not available, use placeholder
+            logger.warning("Lyria music generation returned empty data, using placeholder URL")
+            jingle_url = f"gs://ai-agency-demo/audio/{asset_id}.wav"
+            duration = 10.0  # Placeholder duration
 
         jingle = AudioAsset(
             asset_id=asset_id,
-            url=mock_url,
-            duration_seconds=10.0,
+            url=jingle_url,
+            duration_seconds=duration,
             audio_type="jingle",
         )
 
@@ -224,11 +241,24 @@ This will resonate with {product_category} enthusiasts and create emotional conn
         voice = self._select_voice(brand_tone)
 
         # Generate TTS using Lyria
+        logger.info(f"Generating TTS with voice: {voice}")
         audio_data = await lyria_client.synthesize_speech(text=script, voice=voice)
 
-        # In production, upload to GCS
         asset_id = f"podcast_{uuid.uuid4().hex[:12]}"
-        mock_url = f"gs://ai-agency-demo/audio/{asset_id}.mp3"
+
+        # Upload TTS audio to GCS
+        if audio_data and len(audio_data) > 0:
+            logger.info(f"Uploading podcast ad to GCS ({len(audio_data)} bytes)...")
+            asset_id, podcast_url = await storage_client.upload_audio(
+                audio_data=audio_data,
+                asset_id=asset_id,
+                content_type="audio/mpeg",
+            )
+            logger.info(f"Podcast ad uploaded to: {podcast_url}")
+        else:
+            # TTS failed, use placeholder
+            logger.error("TTS returned empty data")
+            raise RuntimeError("Failed to generate TTS audio")
 
         # Estimate duration (rough: ~150 words per minute)
         word_count = len(script.split())
@@ -236,9 +266,10 @@ This will resonate with {product_category} enthusiasts and create emotional conn
 
         podcast_ad = AudioAsset(
             asset_id=asset_id,
-            url=mock_url,
+            url=podcast_url,
             duration_seconds=duration,
             audio_type="podcast_ad",
+            script=script,  # Store the script in the asset
         )
 
         logger.debug(f"Generated podcast ad: {asset_id}, ~{duration:.1f}s")

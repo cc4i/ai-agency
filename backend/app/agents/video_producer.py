@@ -11,6 +11,7 @@ from typing import Any, Dict
 from app.agents.base import AgentBase
 from app.models.assets import CritiqueResult, VideoAsset, VideoProducerOutput
 from app.services.google_ai_client import veo_client
+from app.services.storage_client import storage_client
 
 logger = logging.getLogger(__name__)
 
@@ -134,30 +135,53 @@ class VideoProducerAgent(AgentBase):
             "reference_image": image_url,
             "duration_seconds": duration_seconds,
             "theme": theme,
+            "product_name": product_name,
+            "product_category": product_category,
+            "key_features": key_features,
         }
 
-        # Generate video using Veo
-        video_data = await veo_client.generate_video(
-            prompt=base_prompt,
-            reference_image=image_url,
-            duration_seconds=duration_seconds,
-        )
+        # Validate image URL
+        if not image_url:
+            raise ValueError("image_url is required for video generation")
 
-        # In production, upload to GCS and get URL
-        asset_id = f"vid_{uuid.uuid4().hex[:12]}"
-        mock_url = f"gs://ai-agency-demo/videos/{asset_id}.mp4"
+        try:
+            # Generate video using Veo
+            logger.info(f"Calling Veo API for {duration_seconds}s video...")
+            video_data = await veo_client.generate_video(
+                prompt=base_prompt,
+                reference_image=image_url,
+                duration_seconds=duration_seconds,
+            )
 
-        video_asset = VideoAsset(
-            asset_id=asset_id,
-            url=mock_url,
-            duration_seconds=duration_seconds,
-            generation_params=generation_params,
-            revision_number=0,
-        )
+            # Check if video data was generated
+            if not video_data or len(video_data) == 0:
+                raise RuntimeError("Veo API returned empty video data")
 
-        logger.debug(f"Generated video: {asset_id}")
+            logger.info(f"Veo generated {len(video_data)} bytes of video data")
 
-        return video_asset
+            # Upload to Google Cloud Storage and get signed URL
+            asset_id, video_url = await storage_client.upload_video(
+                video_data=video_data,
+                content_type="video/mp4",
+            )
+
+            video_asset = VideoAsset(
+                asset_id=asset_id,
+                url=video_url,  # Real GCS signed URL
+                duration_seconds=duration_seconds,
+                generation_params=generation_params,
+                revision_number=0,
+            )
+
+            logger.info(f"Video uploaded to GCS: {asset_id}")
+
+            return video_asset
+
+        except Exception as e:
+            logger.error(f"Video generation failed: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            raise
 
     async def critique(
         self, result: Dict[str, Any], brief: Dict[str, Any]
@@ -237,17 +261,40 @@ class VideoProducerAgent(AgentBase):
         logger.info(f"Video Producer revising: {critique.revision_instructions}")
 
         output = VideoProducerOutput(**result)
+        old_video = output.video
 
         # Track revision
-        revision_note = f"Revision {output.video.revision_number + 1}: {critique.revision_instructions}"
+        revision_note = f"Revision {old_video.revision_number + 1}: {critique.revision_instructions}"
         output.revision_history.append(revision_note)
 
+        # Extract original generation parameters
+        gen_params = old_video.generation_params
+
         # Re-generate video with revision instructions
-        # In production, call _generate_video with revision_instructions
-        # For now, increment revision number
-        output.video.revision_number += 1
-        output.critique_notes = critique.revision_instructions
+        try:
+            revised_video = await self._generate_video(
+                image_url=gen_params.get("reference_image", ""),
+                product_name=gen_params.get("product_name", "Product"),
+                theme=gen_params.get("theme", "modern"),
+                key_features=gen_params.get("key_features", []),
+                product_category=gen_params.get("product_category", "product"),
+                duration_seconds=old_video.duration_seconds,
+                revision_instructions=critique.revision_instructions,
+            )
 
-        logger.info(f"Video revision {output.video.revision_number} completed")
+            # Update revision number
+            revised_video.revision_number = old_video.revision_number + 1
 
-        return output.model_dump()
+            # Update output with revised video
+            output.video = revised_video
+            output.critique_notes = critique.revision_instructions
+
+            logger.info(f"Video revision {revised_video.revision_number} completed")
+
+            return output.model_dump()
+
+        except Exception as e:
+            logger.error(f"Video revision failed: {e}")
+            # Return original output with error note
+            output.critique_notes = f"Revision failed: {str(e)}"
+            return output.model_dump()

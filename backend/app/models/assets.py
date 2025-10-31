@@ -43,6 +43,7 @@ class AudioAsset(BaseModel):
     url: str
     duration_seconds: float
     audio_type: str  # "jingle", "podcast_ad"
+    script: Optional[str] = None  # Ad script for podcast_ad type
 
 
 class TranscriptionAsset(BaseModel):
