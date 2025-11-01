@@ -64,6 +64,81 @@ def sample_project_brief():
     }
 
 
+@pytest.fixture
+def sample_strategy_task():
+    """Sample task for Strategy Agent testing."""
+    return {
+        "task_id": "strategy_test_001",
+        "description": "Generate personas and slogans",
+        "product_name": "Aura Smart Sneaker",
+        "product_category": "footwear",
+        "theme": "Tokyo neon",
+        "brand_tone": "futuristic, energetic, tech-forward",
+        "target_market": "Urban athletes aged 18-35",
+        "key_features": ["glowing sole", "smart tracking", "adaptive cushioning"],
+        "sketch_url": "https://example.com/sketch.png",
+    }
+
+
+@pytest.fixture
+def sample_art_task():
+    """Sample task for Art Director Agent testing."""
+    return {
+        "task_id": "art_test_001",
+        "description": "Generate hero images",
+        "product_name": "Aura Smart Sneaker",
+        "product_category": "footwear",
+        "slogan": "Run on Light",
+        "theme": "Tokyo neon",
+        "brand_tone": "futuristic, energetic, tech-forward",
+        "key_features": ["glowing sole", "smart tracking"],
+    }
+
+
+@pytest.fixture
+def sample_video_task():
+    """Sample task for Video Producer Agent testing."""
+    return {
+        "task_id": "video_test_001",
+        "description": "Generate social media video",
+        "product_name": "Aura Smart Sneaker",
+        "product_category": "footwear",
+        "theme": "Tokyo neon",
+        "key_features": ["glowing sole", "smart tracking"],
+        "image_url": "https://example.com/hero_image.png",
+    }
+
+
+@pytest.fixture
+def sample_audio_task():
+    """Sample task for Audio Team Agent testing."""
+    return {
+        "task_id": "audio_test_001",
+        "description": "Generate audio assets",
+        "product_name": "Aura Smart Sneaker",
+        "product_category": "footwear",
+        "theme": "Tokyo neon",
+        "slogan": "Run on Light",
+        "brand_tone": "futuristic, energetic",
+    }
+
+
+@pytest.fixture
+def sample_web_task():
+    """Sample task for Web Dev Agent testing."""
+    return {
+        "task_id": "web_test_001",
+        "description": "Generate landing page",
+        "product_name": "Aura Smart Sneaker",
+        "product_category": "footwear",
+        "slogan": "Run on Light",
+        "theme": "Tokyo neon",
+        "brand_tone": "futuristic",
+        "key_features": ["glowing sole", "smart tracking"],
+        "image_url": "https://example.com/hero_image.png",
+    }
+
+
 # Integration test configuration
 def pytest_configure(config):
     """Configure pytest with custom settings."""
