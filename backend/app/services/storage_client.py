@@ -62,13 +62,12 @@ class StorageClient:
             # Upload video
             blob.upload_from_string(video_data, content_type=content_type)
 
-            # Make blob publicly readable
-            blob.make_public()
+            # Return backend API URL instead of GCS public URL
+            # Frontend will access via: /api/assets/videos/{asset_id}
+            url = f"{settings.backend_url}/api/assets/videos/{asset_id}"
 
-            # Get public URL
-            url = blob.public_url
-
-            logger.info(f"Video uploaded successfully: {url}")
+            logger.info(f"Video uploaded successfully to GCS: gs://{self.bucket_name}/{blob_name}")
+            logger.info(f"Video accessible via: {url}")
 
             return asset_id, url
 
@@ -109,13 +108,11 @@ class StorageClient:
             # Upload audio
             blob.upload_from_string(audio_data, content_type=content_type)
 
-            # Make blob publicly readable
-            blob.make_public()
+            # Return backend API URL instead of GCS public URL
+            url = f"{settings.backend_url}/api/assets/audio/{asset_id}"
 
-            # Get public URL
-            url = blob.public_url
-
-            logger.info(f"Audio uploaded successfully: {url}")
+            logger.info(f"Audio uploaded successfully to GCS: gs://{self.bucket_name}/{blob_name}")
+            logger.info(f"Audio accessible via: {url}")
 
             return asset_id, url
 
@@ -157,13 +154,11 @@ class StorageClient:
             # Upload image
             blob.upload_from_string(image_data, content_type=content_type)
 
-            # Make blob publicly readable
-            blob.make_public()
+            # Return backend API URL instead of GCS public URL
+            url = f"{settings.backend_url}/api/assets/images/{asset_id}"
 
-            # Get public URL
-            url = blob.public_url
-
-            logger.info(f"Image uploaded successfully: {url}")
+            logger.info(f"Image uploaded successfully to GCS: gs://{self.bucket_name}/{blob_name}")
+            logger.info(f"Image accessible via: {url}")
 
             return asset_id, url
 

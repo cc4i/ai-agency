@@ -13,9 +13,9 @@ export function TranscriptDisplay() {
   }, [transcript]);
 
   return (
-    <div className="w-96 bg-black border-l border-zinc-800 flex flex-col h-[calc(100vh-100px)]">
-      <div className="p-4 border-b border-zinc-800">
-        <h2 className="font-bold text-lg">Conversation Transcript</h2>
+    <div className="w-96 bg-black border-l border-zinc-800 flex flex-col h-full">
+      <div className="p-3 border-b border-zinc-800 flex-shrink-0">
+        <h2 className="font-semibold text-sm">Conversation Transcript</h2>
       </div>
       <div className="flex-1 overflow-y-auto p-4 space-y-4" ref={scrollRef}>
         {transcript.map((message, index) => (

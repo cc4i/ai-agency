@@ -13,6 +13,7 @@ dependencies = [
     "pydantic-settings>=2.1.0",
     # Google AI SDKs
     "google-genai>=1.46.0",  # Unified SDK for Gemini, Imagen, Veo
+    "google-adk>=1.17.0",  # Agent Development Kit for simplified streaming
     "google-cloud-texttospeech>=2.14.0",  # TTS for Lyria
     "google-cloud-speech>=2.20.0",  # STT for Chirp
     # HTTP client and image processing

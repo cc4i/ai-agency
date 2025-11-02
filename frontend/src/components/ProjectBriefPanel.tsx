@@ -43,10 +43,13 @@ export function ProjectBriefPanel() {
   const isFieldHighlighted = (field: string) => highlightedFields.has(field);
 
   return (
-    <div className="w-80 border-r border-zinc-800 bg-zinc-950 p-6 overflow-y-auto">
-      <h2 className="text-lg font-semibold text-white mb-6">Project Brief</h2>
+    <div className="w-80 border-r border-zinc-800 bg-zinc-950 flex flex-col h-full">
+      <div className="p-3 flex-shrink-0">
+        <h2 className="text-sm font-semibold text-white mb-2">Project Brief</h2>
+      </div>
 
-      <div className="space-y-4">
+      <div className="flex-1 overflow-y-auto px-3 pb-3">
+        <div className="space-y-1.5">
         <BriefField
           label="Product"
           value={brief.product_name}
@@ -84,8 +87,8 @@ export function ProjectBriefPanel() {
               isFieldHighlighted('key_features') && 'bg-blue-500/10 -mx-2 px-2 py-1 rounded'
             )}
           >
-            <div className="text-xs font-medium text-zinc-400 mb-2">Key Features</div>
-            <ul className="list-disc list-inside text-sm text-zinc-300 space-y-1">
+            <div className="text-xs font-medium text-zinc-400 mb-1">Key Features</div>
+            <ul className="list-disc list-inside text-sm text-zinc-300 space-y-0.5">
               {brief.key_features.map((feature, i) => (
                 <li key={i}>{feature}</li>
               ))}
@@ -100,7 +103,7 @@ export function ProjectBriefPanel() {
               isFieldHighlighted('selected_slogan') && 'bg-green-500/10 -mx-2 px-2 py-1 rounded'
             )}
           >
-            <div className="text-xs font-medium text-zinc-400 mb-2">Selected Slogan</div>
+            <div className="text-xs font-medium text-zinc-400 mb-1">Selected Slogan</div>
             <div className="text-sm font-medium text-green-400">{brief.selected_slogan}</div>
           </div>
         )}
@@ -133,9 +136,9 @@ export function ProjectBriefPanel() {
         )}
       </div>
 
-      <div className="mt-6 pt-6 border-t border-zinc-800 text-xs text-zinc-500">
-        <div>Session: {brief.session_id.slice(0, 8)}</div>
-        <div>Updated: {new Date(brief.updated_at).toLocaleTimeString()}</div>
+        <div className="mt-3 pt-3 border-t border-zinc-800 text-xs text-zinc-500">
+          <div>Updated: {new Date(brief.updated_at).toLocaleTimeString()}</div>
+        </div>
       </div>
     </div>
   );
@@ -155,7 +158,7 @@ function BriefField({ label, value, highlighted }: BriefFieldProps) {
         highlighted && 'bg-blue-500/10 -mx-2 px-2 py-1 rounded'
       )}
     >
-      <div className="text-xs font-medium text-zinc-400 mb-1">{label}</div>
+      <div className="text-xs font-medium text-zinc-400 mb-0.5">{label}</div>
       <div className="text-sm text-zinc-200">{value}</div>
     </div>
   );

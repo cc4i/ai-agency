@@ -81,6 +81,7 @@ class AgentOrchestrator:
         logger.info(f"Executing agent: {agent_id} for project: {project_id}")
 
         # Update agent status and announce start
+        # Note: We set status in Redis as "working" but ADK tools will broadcast "thinking" to frontend
         await redis_client.set_agent_status(agent_id, "working")
         if announcement_callback:
             await announcement_callback(f"🤖 Agent '{agent.agent_id}' is starting its task...", "info")

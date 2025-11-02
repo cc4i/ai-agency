@@ -75,12 +75,12 @@ export default function WorkspaceClient() {
   }
 
   return (
-    <div className="min-h-screen bg-black text-white flex flex-col">
+    <div className="h-screen bg-black text-white flex flex-col overflow-hidden">
       {/* Agent Status Bar */}
       <AgentStatusBar />
 
       {/* Main Content Area */}
-      <div className="relative flex flex-1 overflow-hidden">
+      <div className="relative flex flex-1 overflow-hidden min-h-0">
         {/* Left Sidebar - Project Brief */}
         <ProjectBriefPanel />
 
@@ -101,8 +101,7 @@ export default function WorkspaceClient() {
 
       {/* Session Info - Bottom Right */}
       <div className="fixed bottom-4 right-4 text-xs text-zinc-600">
-        <div>Session: {sessionId.slice(0, 12)}...</div>
-        <div>Project: {projectId}</div>
+        <div>Session: {sessionId}</div>
       </div>
     </div>
   );

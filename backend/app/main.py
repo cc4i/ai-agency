@@ -107,7 +107,7 @@ async def health_check():
 @app.websocket("/ws/{session_id}/{project_id}")
 async def gemini_live_websocket(websocket: WebSocket, session_id: str, project_id: str):
     """
-    WebSocket endpoint for Gemini Live streaming conversation.
+    WebSocket endpoint for Gemini Live streaming conversation (Manual Implementation).
 
     This endpoint handles:
     - Bidirectional audio streaming (user <-> Gemini Live)
@@ -123,7 +123,7 @@ async def gemini_live_websocket(websocket: WebSocket, session_id: str, project_i
     """
     from app.services.gemini_live import GeminiLiveConnection
 
-    logger.info(f"WebSocket connection request for session: {session_id}, project: {project_id}")
+    logger.info(f"[Manual] WebSocket connection request for session: {session_id}, project: {project_id}")
 
     # Create Gemini Live connection
     # Available voices: Puck, Charon (male), Kore, Aoede (female), Fenrir
@@ -138,9 +138,56 @@ async def gemini_live_websocket(websocket: WebSocket, session_id: str, project_i
         await gemini_connection.connect(websocket)
 
     except WebSocketDisconnect:
-        logger.info(f"WebSocket disconnected for session: {session_id}")
+        logger.info(f"[Manual] WebSocket disconnected for session: {session_id}")
     except Exception as e:
-        logger.error(f"WebSocket error for session {session_id}: {e}")
+        logger.error(f"[Manual] WebSocket error for session {session_id}: {e}")
+        try:
+            await websocket.close(code=1011, reason=f"Connection error: {str(e)}")
+        except:
+            pass
+    finally:
+        # Clean up
+        await gemini_connection.disconnect()
+
+
+@app.websocket("/ws/adk/{session_id}/{project_id}")
+async def gemini_live_adk_websocket(websocket: WebSocket, session_id: str, project_id: str):
+    """
+    WebSocket endpoint for Gemini Live streaming conversation (ADK Implementation).
+
+    This is the simplified ADK-based implementation that replaces 2,219 lines
+    of manual WebSocket handling with ~536 lines using Google ADK abstractions.
+
+    Benefits over manual implementation:
+    - Automatic tool execution (no manual routing)
+    - Built-in session resumption
+    - Simplified audio streaming with LiveRequestQueue
+    - Automatic transcription handling
+
+    Args:
+        websocket: FastAPI WebSocket connection
+        session_id: Unique session identifier
+        project_id: Project identifier
+    """
+    from app.services.gemini_live_adk import GeminiLiveADKConnection
+
+    logger.info(f"[ADK] WebSocket connection request for session: {session_id}, project: {project_id}")
+
+    # Create ADK-based Gemini Live connection
+    gemini_connection = GeminiLiveADKConnection(
+        session_id=session_id,
+        project_id=project_id,
+        voice_name="Kore"  # Female voice
+    )
+
+    try:
+        # Establish connection: Frontend → Backend → ADK → Gemini Live
+        await gemini_connection.connect(websocket)
+
+    except WebSocketDisconnect:
+        logger.info(f"[ADK] WebSocket disconnected for session: {session_id}")
+    except Exception as e:
+        logger.error(f"[ADK] WebSocket error for session {session_id}: {e}")
         try:
             await websocket.close(code=1011, reason=f"Connection error: {str(e)}")
         except:
@@ -279,6 +326,148 @@ async def upload_asset():
         "url": f"https://storage.googleapis.com/{settings.gcs_bucket_name}/{asset_id}",
         "status": "uploaded"
     }
+
+
+@app.get("/api/assets/videos/{asset_id}")
+async def get_video_asset(asset_id: str):
+    """
+    Serve video asset from private GCS bucket.
+
+    Args:
+        asset_id: Video asset ID (e.g., vid_abc123)
+
+    Returns:
+        Video file streamed from GCS
+    """
+    from fastapi import HTTPException
+    from fastapi.responses import StreamingResponse
+    from google.cloud import storage
+
+    try:
+        # Initialize GCS client
+        client = storage.Client(project=settings.google_cloud_project)
+        bucket = client.bucket(settings.gcs_bucket_name)
+        blob_name = f"videos/{asset_id}.mp4"
+        blob = bucket.blob(blob_name)
+
+        # Check if blob exists
+        if not blob.exists():
+            logger.error(f"Video asset not found: {blob_name}")
+            raise HTTPException(status_code=404, detail="Video not found")
+
+        # Stream video from GCS
+        logger.info(f"Serving video asset: {blob_name}")
+        video_bytes = blob.download_as_bytes()
+
+        return StreamingResponse(
+            iter([video_bytes]),
+            media_type="video/mp4",
+            headers={
+                "Content-Disposition": f"inline; filename={asset_id}.mp4",
+                "Cache-Control": "public, max-age=3600"
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"Error serving video asset {asset_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve video")
+
+
+@app.get("/api/assets/audio/{asset_id}")
+async def get_audio_asset(asset_id: str):
+    """
+    Serve audio asset from private GCS bucket.
+
+    Args:
+        asset_id: Audio asset ID (e.g., audio_abc123)
+
+    Returns:
+        Audio file streamed from GCS
+    """
+    from fastapi import HTTPException
+    from fastapi.responses import StreamingResponse
+    from google.cloud import storage
+
+    try:
+        # Initialize GCS client
+        client = storage.Client(project=settings.google_cloud_project)
+        bucket = client.bucket(settings.gcs_bucket_name)
+        blob_name = f"audio/{asset_id}.mp3"
+        blob = bucket.blob(blob_name)
+
+        # Check if blob exists
+        if not blob.exists():
+            logger.error(f"Audio asset not found: {blob_name}")
+            raise HTTPException(status_code=404, detail="Audio not found")
+
+        # Stream audio from GCS
+        logger.info(f"Serving audio asset: {blob_name}")
+        audio_bytes = blob.download_as_bytes()
+
+        return StreamingResponse(
+            iter([audio_bytes]),
+            media_type="audio/mpeg",
+            headers={
+                "Content-Disposition": f"inline; filename={asset_id}.mp3",
+                "Cache-Control": "public, max-age=3600"
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"Error serving audio asset {asset_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve audio")
+
+
+@app.get("/api/assets/images/{asset_id}")
+async def get_image_asset(asset_id: str):
+    """
+    Serve image asset from private GCS bucket.
+
+    Args:
+        asset_id: Image asset ID (e.g., img_abc123)
+
+    Returns:
+        Image file streamed from GCS
+    """
+    from fastapi import HTTPException
+    from fastapi.responses import Response
+    from google.cloud import storage
+
+    try:
+        # Initialize GCS client
+        client = storage.Client(project=settings.google_cloud_project)
+        bucket = client.bucket(settings.gcs_bucket_name)
+
+        # Try both PNG and JPG extensions
+        blob = None
+        content_type = None
+        for ext, mime in [("png", "image/png"), ("jpg", "image/jpeg")]:
+            blob_name = f"images/{asset_id}.{ext}"
+            test_blob = bucket.blob(blob_name)
+            if test_blob.exists():
+                blob = test_blob
+                content_type = mime
+                break
+
+        if not blob:
+            logger.error(f"Image asset not found: images/{asset_id}.*")
+            raise HTTPException(status_code=404, detail="Image not found")
+
+        # Stream image from GCS
+        logger.info(f"Serving image asset: {blob.name}")
+        image_bytes = blob.download_as_bytes()
+
+        return Response(
+            content=image_bytes,
+            media_type=content_type,
+            headers={
+                "Cache-Control": "public, max-age=3600"
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"Error serving image asset {asset_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve image")
 
 
 # Test Endpoints for Agent System

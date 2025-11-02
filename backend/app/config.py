@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     # Google Cloud Storage
     gcs_bucket_name: str = "ai-agency-demo"
 
+    # Backend API URL
+    backend_url: str = "http://localhost:8000"
+
     # Gemini Live WebSocket (Vertex AI)
     gemini_live_ws_url: str = (
         "wss://us-central1-aiplatform.googleapis.com/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent"

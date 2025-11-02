@@ -32,8 +32,8 @@ export function AssetDisplay() {
   }
 
   return (
-    <div className="flex-1 overflow-y-auto p-8">
-      <div className="max-w-6xl mx-auto space-y-8">
+    <div className="flex-1 overflow-y-auto p-4">
+      <div className="max-w-6xl mx-auto space-y-4">
         {assets.strategy && <StrategyAssets data={assets.strategy} />}
         {assets.art_director && <ArtDirectorAssets data={assets.art_director} />}
         {assets.video_producer && <VideoProducerAssets data={assets.video_producer} />}
@@ -49,14 +49,14 @@ function StrategyAssets({ data }: { data: any[] }) {
   const assetData = latestAsset.data;
 
   return (
-    <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-6">
-      <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+    <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-4">
+      <h3 className="text-base font-semibold text-white mb-3 flex items-center gap-2">
         🎯 Strategy & Personas
       </h3>
 
       {/* Personas */}
       {assetData.personas && (
-        <div className="mb-6">
+        <div className="mb-4">
           <h4 className="text-sm font-medium text-zinc-400 mb-3">Customer Personas</h4>
           <div className="grid grid-cols-3 gap-4">
             {assetData.personas.map((persona: any, i: number) => (
@@ -96,8 +96,8 @@ function ArtDirectorAssets({ data }: { data: any[] }) {
   const [selectedImage, setSelectedImage] = useState<number | null>(null);
 
   return (
-    <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-6">
-      <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+    <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-4">
+      <h3 className="text-base font-semibold text-white mb-3 flex items-center gap-2">
         🎨 Hero Images
       </h3>
 
@@ -127,8 +127,8 @@ function VideoProducerAssets({ data }: { data: any[] }) {
   const assetData = latestAsset.data;
 
   return (
-    <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-6">
-      <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+    <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-4">
+      <h3 className="text-base font-semibold text-white mb-3 flex items-center gap-2">
         🎬 Social Media Video
       </h3>
 
@@ -160,8 +160,8 @@ function AudioTeamAssets({ data }: { data: any[] }) {
   const assetData = latestAsset.data;
 
   return (
-    <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-6">
-      <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+    <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-4">
+      <h3 className="text-base font-semibold text-white mb-3 flex items-center gap-2">
         🎵 Audio Assets
       </h3>
 
@@ -199,8 +199,8 @@ function WebDevAssets({ data }: { data: any[] }) {
   const assetData = latestAsset.data;
 
   return (
-    <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-6">
-      <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+    <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-4">
+      <h3 className="text-base font-semibold text-white mb-3 flex items-center gap-2">
         💻 Landing Page
       </h3>
 

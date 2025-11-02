@@ -452,8 +452,8 @@ export function useWebSocket(sessionId: string, projectId: string) {
       wsRef.current = null;
     }
 
-    console.log(`${sessionPrefix} [WebSocket] 🔌 Connecting to ${WS_URL}/ws/${sessionId}/${projectId}`);
-    const ws = new WebSocket(`${WS_URL}/ws/${sessionId}/${projectId}`);
+    console.log(`${sessionPrefix} [WebSocket] 🔌 Connecting to ${WS_URL}/ws/adk/${sessionId}/${projectId} (ADK)`);
+    const ws = new WebSocket(`${WS_URL}/ws/adk/${sessionId}/${projectId}`);
 
     ws.onopen = () => {
       console.log(`${sessionPrefix} [WebSocket] ✓ Connected to backend`);

@@ -25,8 +25,8 @@ export function ProducerAnnouncements() {
   }, [announcements]);
 
   return (
-    <div className="border-t border-zinc-800 bg-zinc-950 h-64">
-      <div className="p-4 border-b border-zinc-800">
+    <div className="border-t border-zinc-800 bg-zinc-950 h-48">
+      <div className="p-2 border-b border-zinc-800">
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-semibold text-white flex items-center gap-2">
             🎙️ Executive Producer
@@ -40,9 +40,9 @@ export function ProducerAnnouncements() {
         </div>
       </div>
 
-      <div ref={scrollRef} className="h-48 overflow-y-auto p-4 space-y-3">
+      <div ref={scrollRef} className="h-40 overflow-y-auto p-3 space-y-2">
         {announcements.length === 0 ? (
-          <div className="text-sm text-zinc-500 text-center py-8">
+          <div className="text-sm text-zinc-500 text-center py-4">
             Waiting for producer to speak...
           </div>
         ) : (
@@ -91,12 +91,12 @@ function Announcement({ announcement }: AnnouncementProps) {
   };
 
   return (
-    <div className={cn('rounded-lg border p-3', getBackgroundColor())}>
+    <div className={cn('rounded-lg border p-2', getBackgroundColor())}>
       <div className="flex items-start gap-2">
         {getIcon()}
         <div className="flex-1">
           <div className="text-sm text-zinc-200">{announcement.message}</div>
-          <div className="text-xs text-zinc-500 mt-1">
+          <div className="text-xs text-zinc-500 mt-0.5">
             {new Date(announcement.timestamp).toLocaleTimeString()}
           </div>
         </div>
