@@ -47,8 +47,151 @@ if settings.google_application_credentials:
 logger = logging.getLogger(__name__)
 
 # ============================================================================
-# HELPER FUNCTIONS - WebSocket broadcasting utilities
+# HELPER FUNCTIONS - WebSocket broadcasting utilities & data sanitization
 # ============================================================================
+
+def truncate_for_logging(data: Any, max_len: int = 100) -> Any:
+    """
+    Truncate long strings (like data URIs) in data for cleaner logging.
+
+    Args:
+        data: Data to process
+        max_len: Maximum string length before truncation
+
+    Returns:
+        Data with long strings truncated
+    """
+    if isinstance(data, str) and len(data) > max_len:
+        return f"{data[:30]}... (len={len(data)})"
+    elif isinstance(data, dict):
+        result = {}
+        for k, v in data.items():
+            if isinstance(v, str) and len(v) > max_len:
+                result[k] = f"{v[:30]}... (len={len(v)})"
+            elif isinstance(v, dict) and 'url' in v:
+                result[k] = {**v, 'url': truncate_for_logging(v['url'], max_len)}
+            elif isinstance(v, list):
+                result[k] = [truncate_for_logging(item, max_len) for item in v]
+            elif isinstance(v, dict):
+                result[k] = truncate_for_logging(v, max_len)
+            else:
+                result[k] = v
+        return result
+    elif isinstance(data, list):
+        return [truncate_for_logging(item, max_len) for item in data]
+    else:
+        return data
+
+
+def sanitize_for_json(obj: Any, max_depth: int = 10) -> Any:
+    """
+    Recursively sanitize objects to ensure JSON serializability and UTF-8 safety.
+
+    Handles:
+    - Non-serializable types (datetime, bytes, etc.)
+    - Circular references
+    - Deep nesting
+    - Non-UTF-8 strings
+    """
+    if max_depth <= 0:
+        return "[Max depth reached]"
+
+    # Handle None
+    if obj is None:
+        return None
+
+    # Handle primitives
+    if isinstance(obj, (bool, int, float)):
+        return obj
+
+    # Handle strings - ensure UTF-8 safe
+    if isinstance(obj, str):
+        try:
+            # Test UTF-8 encoding
+            obj.encode('utf-8').decode('utf-8')
+            return obj
+        except UnicodeError:
+            # Replace bad characters
+            return obj.encode('utf-8', 'replace').decode('utf-8')
+
+    # Handle bytes
+    if isinstance(obj, bytes):
+        try:
+            return obj.decode('utf-8')
+        except UnicodeDecodeError:
+            return base64.b64encode(obj).decode('ascii')
+
+    # Handle datetime
+    if hasattr(obj, 'isoformat'):
+        return obj.isoformat()
+
+    # Handle lists/tuples
+    if isinstance(obj, (list, tuple)):
+        return [sanitize_for_json(item, max_depth - 1) for item in obj]
+
+    # Handle dicts
+    if isinstance(obj, dict):
+        return {
+            str(key): sanitize_for_json(value, max_depth - 1)
+            for key, value in obj.items()
+        }
+
+    # Handle Pydantic models
+    if hasattr(obj, 'model_dump'):
+        try:
+            return sanitize_for_json(obj.model_dump(), max_depth - 1)
+        except Exception:
+            return str(obj)
+
+    # Handle other objects - convert to string
+    try:
+        return str(obj)
+    except Exception:
+        return "[Non-serializable object]"
+
+
+def validate_tool_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Validate and sanitize tool results before sending to Gemini Live API.
+
+    This prevents WebSocket 1007 errors caused by:
+    - Non-JSON-serializable data
+    - Invalid UTF-8 characters
+    - Circular references
+    - Overly large payloads
+    """
+    try:
+        # First pass - sanitize all values
+        sanitized = sanitize_for_json(result)
+
+        # Test JSON serialization
+        json_str = json.dumps(sanitized, ensure_ascii=False)
+
+        # Check payload size (ADK may have limits)
+        if len(json_str) > 100000:  # 100KB limit
+            logger.warning(f"Tool result is large ({len(json_str)} bytes), truncating...")
+            # Keep only essential fields
+            sanitized = {
+                "success": sanitized.get("success", True),
+                "message": sanitized.get("message", "")[:500],
+                "note": "Result truncated due to size"
+            }
+
+        # Verify UTF-8 encoding
+        json_str.encode('utf-8').decode('utf-8')
+
+        logger.debug(f"[Tool Result] Validated: {len(json_str)} bytes")
+        return sanitized
+
+    except Exception as e:
+        logger.error(f"[Tool Result] Sanitization failed: {e}", exc_info=True)
+        # Return minimal safe result
+        return {
+            "success": False,
+            "message": "Tool result could not be serialized safely",
+            "error": str(e)
+        }
+
 
 async def broadcast_to_frontend(message_type: str, data: Dict[str, Any], frontend_ws=None) -> None:
     """
@@ -71,7 +214,7 @@ async def broadcast_to_frontend(message_type: str, data: Dict[str, Any], fronten
                 "data": data
             }
             await frontend_ws.send_text(json.dumps(message))
-            logger.info(f"[WebSocket] ✓ Successfully broadcasted {message_type} to frontend: {data}")
+            logger.info(f"[WebSocket] ✓ Broadcasted {message_type}: {truncate_for_logging(data)}")
         except Exception as e:
             logger.error(f"[WebSocket] ✗ Failed to broadcast {message_type}: {e}", exc_info=True)
     else:
@@ -154,6 +297,7 @@ async def update_project_brief(
     frontend_ws = getattr(update_project_brief, '_frontend_ws', None)
 
     logger.info(f"[TOOL] update_project_brief called for {project_id}")
+    logger.info(f"[TOOL] Parameters received: product_name={product_name!r}, category={product_category!r}, theme={theme!r}, brand_tone={brand_tone!r}, target_market={target_market!r}, key_features={key_features!r}")
 
     # Build updates dict (only non-empty values)
     updates = {}
@@ -173,9 +317,18 @@ async def update_project_brief(
         updates["selected_slogan"] = selected_slogan
         logger.info(f"[TOOL] User selected slogan: {selected_slogan}")
     if selected_image_url:
-        # Store as ImageAsset format
-        updates["selected_image"] = {"url": selected_image_url, "type": "hero"}
-        logger.info(f"[TOOL] User selected image: {selected_image_url}")
+        # Create proper ImageAsset object
+        from app.models.assets import ImageAsset
+        import hashlib
+        url_hash = hashlib.md5(selected_image_url.encode()).hexdigest()[:12]
+        selected_image = ImageAsset(
+            asset_id=f"img_{url_hash}",
+            url=selected_image_url,
+            generation_params={},
+            description="User selected hero image"
+        )
+        updates["selected_image"] = selected_image
+        logger.info(f"[TOOL] User selected image: {selected_image_url[:50]}...")
 
     # Update brief in Redis
     brief = await redis_client.update_project_brief(project_id, updates)
@@ -196,12 +349,15 @@ async def update_project_brief(
         except Exception as e:
             logger.error(f"[TOOL] Failed to broadcast brief update: {e}")
 
-    return {
+    tool_result = {
         "success": True,
         "message": f"Updated project brief for {product_name or 'product'}",
         "updated_fields": list(updates.keys()),
         "brief": brief.model_dump(mode="json")
     }
+
+    # Validate before returning to prevent WebSocket 1007 errors
+    return validate_tool_result(tool_result)
 
 
 async def create_campaign_strategy(
@@ -218,47 +374,82 @@ async def create_campaign_strategy(
     Call this when user requests strategy/personas/slogans.
     Missing fields will be pulled from the project brief.
     """
-    from app.services.orchestration import AgentOrchestrator
+    try:
+        from app.services.orchestration import AgentOrchestrator
 
-    orchestrator = AgentOrchestrator()
-    project_id = getattr(create_campaign_strategy, '_project_id', 'default')
+        orchestrator = AgentOrchestrator()
+        project_id = getattr(create_campaign_strategy, '_project_id', 'default')
 
-    logger.info(f"[TOOL] create_campaign_strategy called for {project_id}")
+        logger.info(f"[TOOL] create_campaign_strategy called for {project_id}")
 
-    task = {
-        "task_id": "strategy",
-        "product_name": product_name,
-        "product_category": product_category,
-        "theme": theme,
-        "brand_tone": brand_tone,
-        "target_market": target_market,
-        "key_features": key_features or [],
-    }
+        # Fetch project brief and fill in missing parameters
+        brief = await redis_client.get_project_brief(project_id)
+        if brief:
+            if not product_name:
+                product_name = brief.product_name
+            if not product_category:
+                product_category = brief.product_category
+            if not theme:
+                theme = brief.theme
+            if not brand_tone:
+                brand_tone = brief.brand_tone
+            if not target_market:
+                target_market = brief.target_market
+            if not key_features:
+                key_features = brief.key_features
+            logger.info(f"[TOOL] Filled missing params from brief: product={product_name}, category={product_category}, theme={theme}")
 
-    # Send agent status update: thinking (frontend expects 'thinking', not 'working')
-    await send_agent_status("strategy", "thinking", "Generating campaign strategy and slogans")
+        task = {
+            "task_id": "strategy",
+            "product_name": product_name,
+            "product_category": product_category,
+            "theme": theme,
+            "brand_tone": brand_tone,
+            "target_market": target_market,
+            "key_features": key_features or [],
+        }
 
-    # Execute agent with announcement callback for real-time updates
-    result = await orchestrator.execute_agent(
-        "strategy",
-        task=task,
-        project_id=project_id,
-        with_critique=True,
-        announcement_callback=send_announcement  # ← Pass callback for frontend updates
-    )
+        # Send agent status update: thinking (frontend expects 'thinking', not 'working')
+        await send_agent_status("strategy", "thinking", "Generating campaign strategy and slogans")
 
-    # Send agent status update: complete (frontend expects 'complete', not 'completed')
-    await send_agent_status("strategy", "complete", "")
+        # Execute agent with announcement callback for real-time updates
+        result = await orchestrator.execute_agent(
+            "strategy",
+            task=task,
+            project_id=project_id,
+            with_critique=True,
+            announcement_callback=send_announcement  # ← Pass callback for frontend updates
+        )
 
-    # Broadcast asset if slogans were generated
-    if "slogans" in result:
-        await send_asset_added("strategy", "slogans", result)
+        # Send agent status update: complete (frontend expects 'complete', not 'completed')
+        await send_agent_status("strategy", "complete", "")
 
-    return {
-        "success": True,
-        "message": "Strategy Agent has created campaign personas and slogans",
-        "result": result
-    }
+        # Broadcast asset if slogans were generated
+        if "slogans" in result:
+            await send_asset_added("strategy", "slogans", result)
+
+        # Extract slogans from result to present to Gemini
+        slogans = result.get("slogans", [])
+        personas = result.get("personas", [])
+
+        tool_result = {
+            "success": True,
+            "message": f"Strategy Agent generated {len(slogans)} slogans and {len(personas)} personas. Present each slogan to the user.",
+            "slogans": slogans,
+            "personas": personas
+        }
+
+        # Validate before returning to prevent WebSocket 1007 errors
+        return validate_tool_result(tool_result)
+
+    except Exception as e:
+        logger.error(f"[TOOL] create_campaign_strategy failed: {e}", exc_info=True)
+        await send_agent_status("strategy", "error", "")
+        return validate_tool_result({
+            "success": False,
+            "error": str(e),
+            "message": f"Strategy Agent encountered an error: {str(e)}"
+        })
 
 
 async def generate_hero_images(
@@ -277,104 +468,201 @@ async def generate_hero_images(
     2. User has explicitly SELECTED one slogan
     3. User requests images/visuals
     """
-    from app.services.orchestration import AgentOrchestrator
+    try:
+        from app.services.orchestration import AgentOrchestrator
 
-    orchestrator = AgentOrchestrator()
-    project_id = getattr(generate_hero_images, '_project_id', 'default')
+        orchestrator = AgentOrchestrator()
+        project_id = getattr(generate_hero_images, '_project_id', 'default')
 
-    logger.info(f"[TOOL] generate_hero_images called for {project_id}")
+        logger.info(f"[TOOL] generate_hero_images called for {project_id}, slogan={slogan[:50] if slogan else 'none'}...")
 
-    task = {
-        "task_id": "art_director",
-        "slogan": slogan,
-        "product_name": product_name,
-        "product_category": product_category,
-        "theme": theme,
-        "brand_tone": brand_tone,
-        "key_features": key_features or [],
-    }
+        # Fetch project brief and fill in missing parameters
+        brief = await redis_client.get_project_brief(project_id)
+        if brief:
+            if not slogan:
+                slogan = brief.selected_slogan or ""
+            if not product_name:
+                product_name = brief.product_name
+            if not product_category:
+                product_category = brief.product_category
+            if not theme:
+                theme = brief.theme
+            if not brand_tone:
+                brand_tone = brief.brand_tone
+            if not key_features:
+                key_features = brief.key_features
+            logger.info(f"[TOOL] Filled missing params from brief: slogan={slogan[:30] if slogan else 'none'}, product={product_name}")
 
-    # Send agent status update: thinking
-    await send_agent_status("art_director", "thinking", "Generating hero images")
+        task = {
+            "task_id": "art_director",
+            "slogan": slogan,
+            "product_name": product_name,
+            "product_category": product_category,
+            "theme": theme,
+            "brand_tone": brand_tone,
+            "key_features": key_features or [],
+        }
 
-    # Execute agent with announcement callback for real-time updates
-    result = await orchestrator.execute_agent(
-        "art_director",
-        task=task,
-        project_id=project_id,
-        with_critique=True,
-        announcement_callback=send_announcement  # ← Pass callback for frontend updates
-    )
+        # Send agent status update: thinking
+        await send_agent_status("art_director", "thinking", "Generating hero images")
 
-    # Send agent status update: complete
-    await send_agent_status("art_director", "complete", "")
+        # Execute agent with announcement callback for real-time updates
+        result = await orchestrator.execute_agent(
+            "art_director",
+            task=task,
+            project_id=project_id,
+            with_critique=True,
+            announcement_callback=send_announcement  # ← Pass callback for frontend updates
+        )
 
-    # Broadcast asset if images were generated
-    if "images" in result:
-        await send_asset_added("art_director", "images", result)
+        # Send agent status update: complete
+        await send_agent_status("art_director", "complete", "")
 
-    return {
-        "success": True,
-        "message": "Art Director has created hero images",
-        "result": result
-    }
+        # Broadcast asset if images were generated
+        if "images" in result:
+            await send_asset_added("art_director", "images", result)
+
+        # Extract images from result to present to Gemini
+        images = result.get("images", [])
+
+        tool_result = {
+            "success": True,
+            "message": f"Art Director generated {len(images)} hero images. Describe each image to the user.",
+            "images": images
+        }
+
+        # Validate before returning to prevent WebSocket 1007 errors
+        return validate_tool_result(tool_result)
+
+    except Exception as e:
+        logger.error(f"[TOOL] generate_hero_images failed: {e}", exc_info=True)
+        await send_agent_status("art_director", "error", "")
+        return validate_tool_result({
+            "success": False,
+            "error": str(e),
+            "message": f"Art Director encountered an error: {str(e)}"
+        })
 
 
 async def generate_social_video(
-    image_asset_id: str,
-    product_name: str,
+    product_name: str = "",
     theme: str = "",
     slogan: str = "",
     key_features: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
-    Task the Video Producer Agent to create a 15-second social media video.
+    Task the Video Producer Agent to create a 8-second social media video.
+
+    IMPORTANT: Do NOT pass selected_image_url parameter. The tool will automatically
+    fetch the selected image from the project brief. Just call this function with
+    product_name, theme, slogan, and key_features.
+
+    Args:
+        product_name: Product name (auto-filled from brief if not provided)
+        theme: Visual theme (auto-filled from brief if not provided)
+        slogan: Campaign slogan (auto-filled from brief if not provided)
+        key_features: List of key product features (auto-filled from brief if not provided)
 
     Call ONLY when:
     1. Hero images have been generated
     2. User has selected one image
     3. User requests video
     """
-    from app.services.orchestration import AgentOrchestrator
+    try:
+        from app.services.orchestration import AgentOrchestrator
 
-    orchestrator = AgentOrchestrator()
-    project_id = getattr(generate_social_video, '_project_id', 'default')
+        orchestrator = AgentOrchestrator()
+        project_id = getattr(generate_social_video, '_project_id', 'default')
 
-    logger.info(f"[TOOL] generate_social_video called for {project_id}")
+        logger.info(f"[TOOL] generate_social_video called for {project_id}")
 
-    task = {
-        "task_id": "video_producer",
-        "image_asset_id": image_asset_id,
-        "product_name": product_name,
-        "theme": theme,
-        "slogan": slogan,
-        "key_features": key_features or [],
-    }
+        # Fetch project brief to get selected image
+        brief = await redis_client.get_project_brief(project_id)
+        image_url = ""
 
-    # Send agent status update: thinking
-    await send_agent_status("video_producer", "thinking", "Generating social media video")
+        if brief:
+            # ALWAYS get selected image URL from brief
+            if brief.selected_image:
+                logger.info(f"[TOOL] Found selected_image in brief: type={type(brief.selected_image)}, has_url={hasattr(brief.selected_image, 'url')}")
+                # Handle both ImageAsset object and dict (for backwards compatibility)
+                if hasattr(brief.selected_image, 'url'):
+                    image_url = brief.selected_image.url
+                elif isinstance(brief.selected_image, dict) and 'url' in brief.selected_image:
+                    image_url = brief.selected_image['url']
+                    logger.warning(f"[TOOL] selected_image was dict instead of ImageAsset, using dict access")
+                logger.info(f"[TOOL] Extracted image_url: {image_url[:30] if image_url else 'None'}...")
+            else:
+                logger.warning(f"[TOOL] No selected_image found in brief!")
+            if not product_name:
+                product_name = brief.product_name
+            if not theme:
+                theme = brief.theme
+            if not slogan:
+                slogan = brief.selected_slogan or ""
+            if not key_features:
+                key_features = brief.key_features
+            logger.info(f"[TOOL] Filled missing params from brief: image={image_url[:30] if image_url else 'none'}, product={product_name}")
 
-    # Execute agent with announcement callback for real-time updates
-    result = await orchestrator.execute_agent(
-        "video_producer",
-        task=task,
-        project_id=project_id,
-        with_critique=True,
-        announcement_callback=send_announcement  # ← Pass callback for frontend updates
-    )
+        # Validate prerequisites
+        if not image_url or image_url == "":
+            error_msg = "PREREQUISITE MISSING: User has not selected a hero image yet. You MUST ask the user which of the 4 hero images they would like to use before you can generate a video. Do NOT tell the user you've triggered the video producer - instead ask them to select an image first."
+            logger.warning(f"[TOOL] {error_msg}")
+            await send_agent_status("video_producer", "error", "")
+            return validate_tool_result({
+                "success": False,
+                "error": "missing_prerequisite",
+                "message": error_msg
+            })
 
-    # Send agent status update: complete
-    await send_agent_status("video_producer", "complete", "")
+        # Log image URL (truncated for readability)
+        if isinstance(image_url, str):
+            logger.info(f"[TOOL] video: image_url={image_url[:30]}... (len={len(image_url)})")
 
-    # Broadcast asset if video was generated
-    if "video_url" in result or "video" in result:
-        await send_asset_added("video_producer", "video", result)
+        task = {
+            "task_id": "video_producer",
+            "image_url": image_url,
+            "product_name": product_name,
+            "theme": theme,
+            "slogan": slogan,
+            "key_features": key_features or [],
+        }
 
-    return {
-        "success": True,
-        "message": "Video Producer has created a social media video",
-        "result": result
-    }
+        # Send agent status update: thinking
+        await send_agent_status("video_producer", "thinking", "Generating social media video")
+
+        # Execute agent with announcement callback for real-time updates
+        result = await orchestrator.execute_agent(
+            "video_producer",
+            task=task,
+            project_id=project_id,
+            with_critique=True,
+            announcement_callback=send_announcement  # ← Pass callback for frontend updates
+        )
+
+        # Send agent status update: complete
+        await send_agent_status("video_producer", "complete", "")
+
+        # Broadcast asset if video was generated
+        if "video_url" in result or "video" in result:
+            await send_asset_added("video_producer", "video", result)
+
+        tool_result = {
+            "success": True,
+            "message": "Video Producer has created a social media video",
+            "result": result
+        }
+
+        # Validate before returning to prevent WebSocket 1007 errors
+        return validate_tool_result(tool_result)
+
+    except Exception as e:
+        logger.error(f"[TOOL] generate_social_video failed: {e}", exc_info=True)
+        await send_agent_status("video_producer", "error", "")
+        return validate_tool_result({
+            "success": False,
+            "error": str(e),
+            "message": f"Video Producer encountered an error: {str(e)}. Please ensure an image has been selected."
+        })
 
 
 async def generate_audio_assets(
@@ -390,51 +678,78 @@ async def generate_audio_assets(
     Call when user requests audio content or music for the campaign.
     Can be called after strategy is complete.
     """
-    from app.services.orchestration import AgentOrchestrator
+    try:
+        from app.services.orchestration import AgentOrchestrator
 
-    orchestrator = AgentOrchestrator()
-    project_id = getattr(generate_audio_assets, '_project_id', 'default')
+        orchestrator = AgentOrchestrator()
+        project_id = getattr(generate_audio_assets, '_project_id', 'default')
 
-    logger.info(f"[TOOL] generate_audio_assets called for {project_id}")
+        logger.info(f"[TOOL] generate_audio_assets called for {project_id}")
 
-    task = {
-        "task_id": "audio_team",
-        "product_name": product_name,
-        "theme": theme,
-        "slogan": slogan,
-        "brand_tone": brand_tone,
-        "product_category": product_category,
-    }
+        # Fetch project brief and fill in missing parameters
+        brief = await redis_client.get_project_brief(project_id)
+        if brief:
+            if not product_name:
+                product_name = brief.product_name
+            if not theme:
+                theme = brief.theme
+            if not slogan:
+                slogan = brief.selected_slogan or ""
+            if not brand_tone:
+                brand_tone = brief.brand_tone
+            if not product_category:
+                product_category = brief.product_category
+            logger.info(f"[TOOL] Filled missing params from brief: product={product_name}, theme={theme}, slogan={slogan[:30] if slogan else 'none'}")
 
-    # Send agent status update: thinking
-    await send_agent_status("audio_team", "thinking", "Generating audio assets")
+        task = {
+            "task_id": "audio_team",
+            "product_name": product_name,
+            "theme": theme,
+            "slogan": slogan,
+            "brand_tone": brand_tone,
+            "product_category": product_category,
+        }
 
-    # Execute agent with announcement callback for real-time updates
-    result = await orchestrator.execute_agent(
-        "audio_team",
-        task=task,
-        project_id=project_id,
-        with_critique=True,
-        announcement_callback=send_announcement  # ← Pass callback for frontend updates
-    )
+        # Send agent status update: thinking
+        await send_agent_status("audio_team", "thinking", "Generating audio assets")
 
-    # Send agent status update: complete
-    await send_agent_status("audio_team", "complete", "")
+        # Execute agent with announcement callback for real-time updates
+        result = await orchestrator.execute_agent(
+            "audio_team",
+            task=task,
+            project_id=project_id,
+            with_critique=True,
+            announcement_callback=send_announcement  # ← Pass callback for frontend updates
+        )
 
-    # Broadcast asset if audio was generated
-    if "audio_assets" in result or "jingle_url" in result:
-        await send_asset_added("audio_team", "audio", result)
+        # Send agent status update: complete
+        await send_agent_status("audio_team", "complete", "")
 
-    return {
-        "success": True,
-        "message": "Audio Team has created audio assets",
-        "result": result
-    }
+        # Broadcast asset if audio was generated
+        if "audio_assets" in result or "jingle_url" in result:
+            await send_asset_added("audio_team", "audio", result)
+
+        tool_result = {
+            "success": True,
+            "message": "Audio Team has created audio assets",
+            "result": result
+        }
+
+        # Validate before returning to prevent WebSocket 1007 errors
+        return validate_tool_result(tool_result)
+
+    except Exception as e:
+        logger.error(f"[TOOL] generate_audio_assets failed: {e}", exc_info=True)
+        await send_agent_status("audio_team", "error", "")
+        return validate_tool_result({
+            "success": False,
+            "error": str(e),
+            "message": f"Audio Team encountered an error: {str(e)}"
+        })
 
 
 async def generate_landing_page(
-    image_asset_id: str,
-    product_name: str,
+    product_name: str = "",
     slogan: str = "",
     brand_tone: str = "",
     key_features: Optional[List[str]] = None,
@@ -442,51 +757,112 @@ async def generate_landing_page(
     """
     Task the Web Dev Agent to create a landing page.
 
+    IMPORTANT: Do NOT pass selected_image_url parameter. The tool will automatically
+    fetch the selected image from the project brief. Just call this function with
+    product_name, slogan, brand_tone, and key_features.
+
+    Args:
+        product_name: Product name (auto-filled from brief if not provided)
+        slogan: Campaign slogan (auto-filled from brief if not provided)
+        brand_tone: Brand tone/voice (auto-filled from brief if not provided)
+        key_features: List of key product features (auto-filled from brief if not provided)
+
     Call ONLY when:
     1. Hero images exist
     2. User has selected an image
     3. User requests landing page/website
     """
-    from app.services.orchestration import AgentOrchestrator
+    try:
+        from app.services.orchestration import AgentOrchestrator
 
-    orchestrator = AgentOrchestrator()
-    project_id = getattr(generate_landing_page, '_project_id', 'default')
+        orchestrator = AgentOrchestrator()
+        project_id = getattr(generate_landing_page, '_project_id', 'default')
 
-    logger.info(f"[TOOL] generate_landing_page called for {project_id}")
+        logger.info(f"[TOOL] generate_landing_page called for {project_id}")
 
-    task = {
-        "task_id": "web_dev",
-        "image_asset_id": image_asset_id,
-        "product_name": product_name,
-        "slogan": slogan,
-        "brand_tone": brand_tone,
-        "key_features": key_features or [],
-    }
+        # Fetch project brief to get selected image
+        brief = await redis_client.get_project_brief(project_id)
+        image_url = ""
 
-    # Send agent status update: thinking
-    await send_agent_status("web_dev", "thinking", "Generating landing page")
+        if brief:
+            # ALWAYS get selected image URL from brief
+            if brief.selected_image:
+                logger.info(f"[TOOL] Found selected_image in brief: type={type(brief.selected_image)}, has_url={hasattr(brief.selected_image, 'url')}")
+                # Handle both ImageAsset object and dict (for backwards compatibility)
+                if hasattr(brief.selected_image, 'url'):
+                    image_url = brief.selected_image.url
+                elif isinstance(brief.selected_image, dict) and 'url' in brief.selected_image:
+                    image_url = brief.selected_image['url']
+                    logger.warning(f"[TOOL] selected_image was dict instead of ImageAsset, using dict access")
+                logger.info(f"[TOOL] Extracted image_url: {image_url[:30] if image_url else 'None'}...")
+            else:
+                logger.warning(f"[TOOL] No selected_image found in brief!")
+            if not product_name:
+                product_name = brief.product_name
+            if not slogan:
+                slogan = brief.selected_slogan or ""
+            if not brand_tone:
+                brand_tone = brief.brand_tone
+            if not key_features:
+                key_features = brief.key_features
+            logger.info(f"[TOOL] Filled missing params from brief: image={image_url[:30] if image_url else 'none'}, product={product_name}")
 
-    # Execute agent with announcement callback for real-time updates
-    result = await orchestrator.execute_agent(
-        "web_dev",
-        task=task,
-        project_id=project_id,
-        with_critique=False,
-        announcement_callback=send_announcement  # ← Pass callback for frontend updates
-    )
+        # Validate prerequisites
+        if not image_url or image_url == "":
+            error_msg = "PREREQUISITE MISSING: User has not selected a hero image yet. You MUST ask the user which of the 4 hero images they would like to use before you can generate a landing page. Do NOT tell the user you've triggered the web dev agent - instead ask them to select an image first."
+            logger.warning(f"[TOOL] {error_msg}")
+            await send_agent_status("web_dev", "error", "")
+            return validate_tool_result({
+                "success": False,
+                "error": "missing_prerequisite",
+                "message": error_msg
+            })
 
-    # Send agent status update: complete
-    await send_agent_status("web_dev", "complete", "")
+        task = {
+            "task_id": "web_dev",
+            "image_url": image_url,
+            "product_name": product_name,
+            "slogan": slogan,
+            "brand_tone": brand_tone,
+            "key_features": key_features or [],
+        }
 
-    # Broadcast asset if landing page was generated
-    if "landing_page_url" in result or "html" in result:
-        await send_asset_added("web_dev", "landing_page", result)
+        # Send agent status update: thinking
+        await send_agent_status("web_dev", "thinking", "Generating landing page")
 
-    return {
-        "success": True,
-        "message": "Web Dev Agent has created the landing page",
-        "result": result
-    }
+        # Execute agent with announcement callback for real-time updates
+        result = await orchestrator.execute_agent(
+            "web_dev",
+            task=task,
+            project_id=project_id,
+            with_critique=False,
+            announcement_callback=send_announcement  # ← Pass callback for frontend updates
+        )
+
+        # Send agent status update: complete
+        await send_agent_status("web_dev", "complete", "")
+
+        # Broadcast asset if landing page was generated
+        if "landing_page_url" in result or "html" in result:
+            await send_asset_added("web_dev", "landing_page", result)
+
+        tool_result = {
+            "success": True,
+            "message": "Web Dev Agent has created the landing page",
+            "result": result
+        }
+
+        # Validate before returning to prevent WebSocket 1007 errors
+        return validate_tool_result(tool_result)
+
+    except Exception as e:
+        logger.error(f"[TOOL] generate_landing_page failed: {e}", exc_info=True)
+        await send_agent_status("web_dev", "error", "")
+        return validate_tool_result({
+            "success": False,
+            "error": str(e),
+            "message": f"Web Dev Agent encountered an error: {str(e)}. Please ensure an image has been selected."
+        })
 
 
 # ============================================================================
@@ -495,13 +871,13 @@ async def generate_landing_page(
 
 def create_system_prompt(project_id: str) -> str:
     """Create the Executive Producer system prompt."""
-    return f"""# IDENTITY & ROLE
-
-You are the **Executive Producer** of an AI-powered creative agency called "AI Agency Hub."
+    return f"""
+# IDENTITY & ROLE
+You are the **Executive Producer** of an AI-powered creative agency called "AI Agency Hub." As a voice-first assistant, your primary interface with the user is conversational audio.
 
 Your role is to:
 1. **Understand the client's vision** through natural conversation
-2. **Coordinate specialist agents** (Strategy, Art Director, Video Producer, Audio Team, Web Dev)
+2. Coordinate the creative process by calling functions that represent the work of specialist agents (e.g., `create_campaign_strategy` for the Strategy Agent, `generate_hero_images` for the Art Director)
 3. **Present work thoughtfully** with context and critique
 4. **Guide the creative process** from brief to final deliverables
 
@@ -510,59 +886,82 @@ Your role is to:
 # WORKFLOW STAGES
 
 ## Stage 1: Discovery & Brief Building
-- Engage in warm, conversational dialogue to understand the product
-- Ask open-ended questions about product category, theme, target market, brand tone
-- **CALL `update_project_brief`** as information is gathered (don't wait for all details)
-- Summarize what you've learned and confirm understanding
+- Engage in warm, conversational dialogue to understand the product.
+- **CRITICAL**: Every time the user provides product information (name, category, theme, etc.), IMMEDIATELY call `update_project_brief` with that information.
+- Ask open-ended questions about product category, theme, target market, and brand tone.
+- After the user answers, call `update_project_brief` with the new information before responding.
+- Example flow:
+  - User: "I'm launching a smart e-bike"
+  - You: *[Call `update_project_brief(product_name="smart e-bike", product_category="smart e-bike")`]*
+  - You: "Fantastic! A smart e-bike—that's exciting. Tell me more about what makes it special."
+- Summarize what you've learned to confirm understanding.
+- If the user provides their own assets (e.g., an existing slogan), accept them graciously and use `update_project_brief` to add them to the project.
+
 
 ## Stage 2: Strategy Development
-- When the brief has sufficient detail, propose creating campaign strategy
-- **CALL `create_campaign_strategy`** to generate personas and slogans
-- Present the 3 slogan options with rationale
-- Wait for user to select ONE slogan before proceeding
-- **CALL `update_project_brief`** with `selected_slogan` when user chooses a slogan
+- When the brief has at least a product name, category, and target market, propose creating a campaign strategy.
+- Present the 3 slogan options generated by the Strategy Agent.
+- Wait for the user to select ONE slogan before proceeding.
 
 ## Stage 3: Visual Development
-- After slogan selection, offer to create hero images
-- **CALL `generate_hero_images`** with the selected slogan
-- Present the 3 image options with creative critique
-- Wait for user to select ONE image
-- **CALL `update_project_brief`** with `selected_image_url` when user chooses an image
+- After a slogan is selected, offer to create hero images.
+- Present the 3 image options generated by the Art Director.
+- **CRITICAL**: Wait for the user to explicitly select ONE image before proceeding to Stage 4.
+- Ask the user: "Which image stands out to you?" or "Which image would you like to use for your campaign?"
+- Once user selects, call `update_project_brief` with `selected_image_url` immediately.
 
 ## Stage 4: Asset Production (Parallel)
-User can now request any combination of:
-- **Video**: `generate_social_video` (requires selected image)
-- **Audio**: `generate_audio_assets` (requires slogan)
-- **Landing Page**: `generate_landing_page` (requires selected image)
+- **PREREQUISITE CHECK**: Before offering video/landing page, verify that BOTH a slogan AND image have been selected.
+- If user requests video but no image is selected, say: "I need you to select one of the hero images first. Which one would you like to use?"
+- Once a slogan and image are selected, the user can request any combination of:
+  - **Video**: `generate_social_video` (requires selected image)
+  - **Audio**: `generate_audio_assets` (requires slogan only)
+  - **Landing Page**: `generate_landing_page` (requires selected image)
+
+- **Handle Rejection**: If at any stage the user rejects the generated options (slogans, images), ask for specific feedback and offer to regenerate them. Don't proceed until an option is selected.
+  - **Example Rejection Flow**: 
+    - **User**: "I don't really like any of those."
+    - **You**: "No problem at all. That's what this process is for. Could you tell me what's not clicking? Is it the tone, the wording, or the overall concept? Your feedback will help me dial in the next round."
 
 ---
 
 # VOICE & TONE
 
-- **Warm and professional**: You're a trusted creative partner, not a robot
-- **Concise but thoughtful**: Streaming audio means brevity matters
-- **Visually descriptive**: Help users imagine the work before seeing it
-- **Honest critique**: Point out strengths AND potential improvements
-- **Proactive but patient**: Suggest next steps, but wait for user approval
+- **Warm and professional**: You're a trusted creative partner, not a robot.
+- **Concise but thoughtful**: Streaming audio means brevity matters.
+- **Visually descriptive**: Help users imagine the work before seeing it.
+- **Balanced Critique**: When presenting options, briefly mention a strength and a potential consideration for each (e.g., "This image is very dynamic, though the color palette is more muted."). This helps the user make an informed choice.
+- Proactive but patient: Suggest next steps, but wait for user approval.
+- **Stay in character**: If a user asks for something outside your role (e.g., trivia, writing a poem), politely decline and steer the conversation back to the creative project.
 
 ---
 
 # FUNCTION CALLING RULES
 
 **CRITICAL**: You MUST call the appropriate function when:
-1. User provides product information → `update_project_brief`
-2. User requests strategy/personas/slogans → `create_campaign_strategy`
+1. **User provides ANY product information** → `update_project_brief` (batch all new information from a single user message into one call)
+   - Examples that trigger this:
+     - User says product name → call with `product_name="..."`
+     - User says theme → call with `theme="..."`
+     - User says target market → call with `target_market="..."`
+     - User says key features → call with `key_features=["...", "..."]`
+   - **ALWAYS call this BEFORE responding to the user**
+2. User requests or agrees to strategy/personas/slogans → `create_campaign_strategy`
 3. **User selects a slogan** → `update_project_brief` with `selected_slogan="<slogan_text>"`
-4. User requests images → `generate_hero_images` (requires selected slogan)
+4. User requests or agrees to images → `generate_hero_images` (requires selected slogan)
 5. **User selects an image** → `update_project_brief` with `selected_image_url="<image_url>"`
-6. User requests video → `generate_social_video` (requires selected image)
-7. User requests audio/music → `generate_audio_assets`
-8. User requests landing page → `generate_landing_page` (requires selected image)
+6. User requests video → FIRST verify image is selected, then `generate_social_video`
+7. User requests audio/music → `generate_audio_assets` (requires slogan)
+8. User requests landing page → FIRST verify image is selected, then `generate_landing_page`
 
 **DO NOT**:
-- Narrate that you're calling a function—just call it
-- Call functions speculatively—wait for user confirmation
-- Skip prerequisite steps (e.g., don't generate images without a slogan)
+- Narrate that you're calling a function—just call it.
+- Call functions speculatively—wait for user confirmation.
+- Skip prerequisite steps (e.g., don't generate images without a slogan).
+- **NEVER call `generate_social_video` or `generate_landing_page` unless an image has been selected**.
+- **DO NOT hallucinate that you've triggered an agent if you haven't actually called the function**.
+- **NEVER make up or hallucinate content from agents** - ALWAYS use the exact slogans, images, or other content returned in the tool result.
+- **NEVER present options before calling the tool** - Wait for the tool to return the actual results.
 
 ---
 
@@ -570,25 +969,25 @@ User can now request any combination of:
 
 **User**: "I'm launching a smart sneaker called Aura."
 
-**You**: *[Call `update_project_brief` with product_name="Aura", product_category="footwear"]*
-"Fantastic! Aura—that's a great name for a smart sneaker. Tell me more about what makes it special. What features are you most excited about?"
+**You**: "Fantastic! Aura—that's a great name for a smart sneaker. Tell me more about what makes it special. What features are you most excited about?"
 
 **User**: "It has a glowing sole that changes color, and it tracks your runs."
 
-**You**: *[Call `update_project_brief` with key_features=["glowing sole", "smart tracking"]]*
-"I love that combination of style and tech. Who's your dream customer for this? Are we targeting serious runners, or more fashion-forward urban athletes?"
+**You**: "I love that combination of style and tech. Who's your dream customer for this? Are we targeting serious runners, or more fashion-forward urban athletes?"
 
 **User**: "Urban athletes aged 18-35. Futuristic vibe."
 
-**You**: *[Call `update_project_brief` with target_market="Urban athletes aged 18-35", theme="futuristic"]*
-"Perfect—futuristic, tech-forward, urban energy. We have enough to build a campaign strategy now. Should I have our Strategy Agent create some personas and slogan options?"
+**You**: "Perfect—futuristic, tech-forward, urban energy. We have enough to build a campaign strategy now. Should I have our Strategy Agent create some slogan options?"
 
 **User**: "Yes, let's see the slogans."
 
 **You**: *[Call `create_campaign_strategy`]*
-*[Wait for result, then present 3 slogans with rationale]*
+*[Tool returns: slogans = ["Step Into Your Aura", "Glow with the Flow", "The Future at Your Feet"]]*
+"Alright, I have three slogan options for Aura. Option 1 is 'Step Into Your Aura.' This one is empowering and directly ties into the product name. Option 2 is 'Glow with the Flow.' It's catchy and highlights the light-up sole, though it might feel a bit playful. And Option 3, 'The Future at Your Feet,' is bold and emphasizes the futuristic tech angle. What's your initial reaction?"
 
-**User**: "I like slogan 2, 'Step Into Your Aura'."
+**CRITICAL**: You MUST present the EXACT slogans returned by the tool in the EXACT order, not make up your own.
+
+**User**: "I like slogan 1, 'Step Into Your Aura.'"
 
 **You**: *[Call `update_project_brief` with selected_slogan="Step Into Your Aura"]*
 "Excellent choice! 'Step Into Your Aura' perfectly captures that futuristic energy and personal empowerment. Now that we've locked in the slogan, should I have our Art Director create some hero images to bring this campaign to life?"
@@ -801,24 +1200,55 @@ class GeminiLiveADKConnection:
 
     async def _client_to_agent_messaging(self):
         """Handle Frontend → ADK messaging."""
+        message_count = 0
         while True:
             try:
                 message_json = await self.frontend_ws.receive_text()
                 message = json.loads(message_json)
+                message_count += 1
+
+                logger.debug(f"[ADK] Received message #{message_count}: type={message.get('type')}")
 
                 # Handle audio input (frontend sends "audio_input" type with "data" field)
                 if message.get("type") == "audio_input" and message.get("data"):
                     audio_base64 = message["data"]
-                    decoded_audio = base64.b64decode(audio_base64)
 
-                    logger.debug(f"[ADK] Sending audio chunk: {len(decoded_audio)} bytes (base64: {len(audio_base64)} chars)")
+                    # Validate and clean base64 string to prevent 1007 errors
+                    if not isinstance(audio_base64, str):
+                        logger.error(f"[ADK] Audio data is not a string: {type(audio_base64)}")
+                        continue
 
-                    # Send realtime audio to ADK
-                    # IMPORTANT: Must specify sample rate - frontend sends 16kHz PCM
-                    # Using audio/l16 as it's the standard for raw 16-bit PCM audio.
-                    self.live_request_queue.send_realtime(
-                        types.Blob(data=decoded_audio, mime_type="audio/l16;rate=16000")
-                    )
+                    # Remove whitespace/newlines that might cause invalid frame payload
+                    audio_base64 = audio_base64.strip().replace('\n', '').replace('\r', '').replace(' ', '')
+
+                    try:
+                        # Validate base64 encoding
+                        decoded_audio = base64.b64decode(audio_base64, validate=True)
+
+                        # Sanity check - audio should be reasonable size
+                        if len(decoded_audio) == 0:
+                            logger.warning(f"[ADK] Empty audio chunk received")
+                            continue
+
+                        if len(decoded_audio) > 1000000:  # 1MB max
+                            logger.warning(f"[ADK] Audio chunk too large: {len(decoded_audio)} bytes")
+                            continue
+
+                        logger.debug(f"[ADK] Sending audio chunk: {len(decoded_audio)} bytes (base64: {len(audio_base64)} chars)")
+
+                        # Send realtime audio to ADK
+                        # IMPORTANT: Must specify sample rate - frontend sends 16kHz PCM
+                        # Using audio/l16 as it's the standard for raw 16-bit PCM audio.
+                        self.live_request_queue.send_realtime(
+                            types.Blob(data=decoded_audio, mime_type="audio/l16;rate=16000")
+                        )
+
+                    except base64.binascii.Error as e:
+                        logger.error(f"[ADK] Invalid base64 audio data: {e}")
+                        continue
+                    except Exception as e:
+                        logger.error(f"[ADK] Error processing audio chunk: {e}", exc_info=True)
+                        continue
 
                 # Handle text input (if needed)
                 elif message.get("type") == "text" and message.get("text"):
@@ -828,14 +1258,75 @@ class GeminiLiveADKConnection:
                     )
                     self.live_request_queue.send_content(content=content)
 
+                # Handle image selection from UI
+                elif message.get("type") == "update_brief" and message.get("data"):
+                    data = message["data"]
+                    if "selected_image_url" in data:
+                        image_url = data["selected_image_url"]
+                        logger.info(f"[ADK] User selected image via UI: {image_url[:50]}...")
+
+                        # Update project brief in Redis
+                        try:
+                            brief = await redis_client.get_project_brief(self.project_id)
+                            if brief:
+                                # Create ImageAsset from URL
+                                from app.models.assets import ImageAsset
+                                import hashlib
+                                # Generate asset_id from hash of URL (works for both data URIs and regular URLs)
+                                url_hash = hashlib.md5(image_url.encode()).hexdigest()[:12]
+                                selected_image = ImageAsset(
+                                    asset_id=f"img_{url_hash}",
+                                    url=image_url,
+                                    generation_params={},
+                                    description="User selected hero image"
+                                )
+
+                                # Update brief - pass ImageAsset object, not dict
+                                updated_brief = await redis_client.update_project_brief(
+                                    self.project_id,
+                                    {"selected_image": selected_image}
+                                )
+
+                                # Broadcast update to frontend
+                                await self.frontend_ws.send_text(json.dumps({
+                                    "type": "brief_update",
+                                    "data": {
+                                        "brief": updated_brief.model_dump(mode="json"),
+                                        "changed_fields": ["selected_image"]
+                                    }
+                                }))
+
+                                logger.info(f"[ADK] ✓ Updated project brief with selected image")
+                                logger.info(f"[ADK] ✓ Broadcasted brief_update to frontend")
+                            else:
+                                logger.error(f"[ADK] Project brief not found for {self.project_id}")
+                        except Exception as e:
+                            logger.error(f"[ADK] ✗ Failed to update brief with selected image: {e}", exc_info=True)
+                            logger.error(f"[ADK] image_url was: {image_url[:100] if image_url else 'None'}")
+                            # Send error to frontend
+                            try:
+                                await self.frontend_ws.send_text(json.dumps({
+                                    "type": "error",
+                                    "data": {
+                                        "message": "Failed to update selected image",
+                                        "error": str(e)
+                                    }
+                                }))
+                            except:
+                                pass
+
             except Exception as e:
-                logger.error(f"Client→Agent error: {e}")
+                logger.error(f"Client→Agent error after {message_count} messages: {e}", exc_info=True)
+                logger.error(f"Last message type: {message.get('type') if 'message' in locals() else 'N/A'}")
                 break
 
     async def _agent_to_client_messaging(self):
         """Handle ADK → Frontend messaging."""
+        event_count = 0
         async for event in self.live_events:
+            event_count += 1
             try:
+                logger.debug(f"[ADK] Processing event #{event_count}: {type(event).__name__}")
                 # Handle audio transcription (text representation of audio response)
                 # Frontend expects "text_output" type with "text" and "role" fields
                 if event.output_transcription and event.output_transcription.text:
@@ -879,7 +1370,8 @@ class GeminiLiveADKConnection:
                     }))
 
             except Exception as e:
-                logger.error(f"Agent→Client error: {e}")
+                logger.error(f"Agent→Client error at event #{event_count}: {e}", exc_info=True)
+                logger.error(f"Event type: {type(event).__name__ if 'event' in locals() else 'N/A'}")
                 break
 
     async def _save_transcript(self, role: str, text: str):

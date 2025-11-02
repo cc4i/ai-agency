@@ -57,28 +57,28 @@ requires-dist = [
     { name = "black", marker = "extra == 'dev'", specifier = ">=24.1.1" },
     { name = "celery", specifier = ">=5.3.6" },
     { name = "fakeredis", marker = "extra == 'dev'", specifier = ">=2.21.0" },
-    { name = "fastapi", specifier = ">=0.109.0" },
+    { name = "fastapi", specifier = ">=0.115.0" },
     { name = "google-adk", specifier = ">=1.17.0" },
     { name = "google-cloud-speech", specifier = ">=2.20.0" },
     { name = "google-cloud-storage", specifier = ">=2.14.0" },
     { name = "google-cloud-texttospeech", specifier = ">=2.14.0" },
-    { name = "google-genai", specifier = ">=1.46.0" },
+    { name = "google-genai", specifier = ">=1.47.0" },
     { name = "httpx", specifier = ">=0.26.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.8.0" },
     { name = "numpy", specifier = ">=1.26.3" },
     { name = "pillow", specifier = ">=10.2.0" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.6.0" },
-    { name = "pydantic", specifier = ">=2.6.0" },
-    { name = "pydantic-settings", specifier = ">=2.1.0" },
+    { name = "pydantic", specifier = ">=2.12.0" },
+    { name = "pydantic-settings", specifier = ">=2.6.0" },
     { name = "pydub", specifier = ">=0.25.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.3" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.1.0" },
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.12.0" },
-    { name = "redis", specifier = ">=5.0.1" },
+    { name = "redis", specifier = ">=7.0.1" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.2.0" },
     { name = "soundfile", specifier = ">=0.12.1" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.27.0" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.38.0" },
     { name = "websockets", specifier = ">=12.0" },
 ]
 provides-extras = ["dev"]
@@ -1017,7 +1017,7 @@ wheels = [
 
 [[package]]
 name = "google-genai"
-version = "1.46.0"
+version = "1.47.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -1029,9 +1029,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c7/2d/d5907af6a46fb0b660291a09bb62f9cbc1365899f7d64a74e7d8d2e056c2/google_genai-1.46.0.tar.gz", hash = "sha256:6824c31149fe3b1c7285b25f79b924c5f89fd52466f62e30f76954f8104fe3a7", size = 239561, upload-time = "2025-10-21T22:55:04.241Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9f/97/784fba9bc6c41263ff90cb9063eadfdd755dde79cfa5a8d0e397b067dcf9/google_genai-1.47.0.tar.gz", hash = "sha256:ecece00d0a04e6739ea76cc8dad82ec9593d9380aaabef078990e60574e5bf59", size = 241471, upload-time = "2025-10-29T22:01:02.88Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/db/79/8993ec6cbf56e5c8f88c165380e55de34ec74f7b928bc302ff5c370f9c4e/google_genai-1.46.0-py3-none-any.whl", hash = "sha256:879c4a260d630db0dcedb5cc84a9d7b47acd29e43e9dc63541b511b757ea7296", size = 239445, upload-time = "2025-10-21T22:55:03.072Z" },
+    { url = "https://files.pythonhosted.org/packages/89/ef/e080e8d67c270ea320956bb911a9359664fc46d3b87d1f029decd33e5c4c/google_genai-1.47.0-py3-none-any.whl", hash = "sha256:e3851237556cbdec96007d8028b4b1f2425cdc5c099a8dc36b72a57e42821b60", size = 241506, upload-time = "2025-10-29T22:01:00.982Z" },
 ]
 
 [[package]]

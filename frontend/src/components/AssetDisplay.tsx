@@ -15,7 +15,11 @@ import { useProjectStore } from '@/stores/useProjectStore';
 import { cn } from '@/lib/utils';
 import { useState } from 'react';
 
-export function AssetDisplay() {
+interface AssetDisplayProps {
+  sendMessage?: (message: any) => void;
+}
+
+export function AssetDisplay({ sendMessage }: AssetDisplayProps) {
   const { assets } = useProjectStore();
 
   const hasAssets = Object.keys(assets).length > 0;
@@ -35,7 +39,7 @@ export function AssetDisplay() {
     <div className="flex-1 overflow-y-auto p-4">
       <div className="max-w-6xl mx-auto space-y-4">
         {assets.strategy && <StrategyAssets data={assets.strategy} />}
-        {assets.art_director && <ArtDirectorAssets data={assets.art_director} />}
+        {assets.art_director && <ArtDirectorAssets data={assets.art_director} sendMessage={sendMessage} />}
         {assets.video_producer && <VideoProducerAssets data={assets.video_producer} />}
         {assets.audio_team && <AudioTeamAssets data={assets.audio_team} />}
         {assets.web_dev && <WebDevAssets data={assets.web_dev} />}
@@ -90,10 +94,30 @@ function StrategyAssets({ data }: { data: any[] }) {
   );
 }
 
-function ArtDirectorAssets({ data }: { data: any[] }) {
+interface ArtDirectorAssetsProps {
+  data: any[];
+  sendMessage?: (message: any) => void;
+}
+
+function ArtDirectorAssets({ data, sendMessage }: ArtDirectorAssetsProps) {
   const latestAsset = data[data.length - 1];
   const assetData = latestAsset.data;
   const [selectedImage, setSelectedImage] = useState<number | null>(null);
+
+  const handleImageSelect = (index: number, image: any) => {
+    setSelectedImage(index);
+
+    // Send selection to backend to update project brief
+    if (sendMessage) {
+      sendMessage({
+        type: 'update_brief',
+        data: {
+          selected_image_url: image.url,
+        },
+      });
+      console.log('[AssetDisplay] Sent image selection to backend:', image.url);
+    }
+  };
 
   return (
     <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-4">
@@ -109,7 +133,7 @@ function ArtDirectorAssets({ data }: { data: any[] }) {
               'cursor-pointer rounded-lg border-2 transition-all overflow-hidden',
               selectedImage === i ? 'border-blue-500 ring-2 ring-blue-500/50' : 'border-zinc-700'
             )}
-            onClick={() => setSelectedImage(i)}
+            onClick={() => handleImageSelect(i, image)}
           >
             <img src={image.url} alt={image.description || 'Hero image'} className="w-full aspect-video object-cover" />
             <div className="p-3 bg-zinc-800">

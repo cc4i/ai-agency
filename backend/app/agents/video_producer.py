@@ -144,6 +144,22 @@ class VideoProducerAgent(AgentBase):
         if not image_url:
             raise ValueError("image_url is required for video generation")
 
+        # Log image URL (truncated)
+        if isinstance(image_url, str):
+            logger.info(f"Video Producer: image_url={image_url[:30]}... (len={len(image_url)})")
+
+        # Ensure image_url is a string (handle ImageAsset object if passed)
+        if hasattr(image_url, 'url'):
+            logger.warning(f"Video Producer: image_url was an ImageAsset object, extracting .url")
+            image_url = image_url.url
+        elif not isinstance(image_url, str):
+            raise ValueError(f"image_url must be a string, got {type(image_url)}")
+
+        # Strip whitespace that might interfere with data URI detection
+        image_url = image_url.strip()
+
+        logger.info(f"Video Producer: After cleanup - image_url starts with: '{image_url[:30]}'")
+
         try:
             # Generate video using Veo
             logger.info(f"Calling Veo API for {duration_seconds}s video...")
@@ -206,8 +222,8 @@ class VideoProducerAgent(AgentBase):
         issues = []
         revision_notes = []
 
-        # Check duration
-        expected_duration = brief.get("video_duration", 15)
+        # Check duration (allow 8s default, which is what Veo generates)
+        expected_duration = brief.get("video_duration", 8)
         if video.duration_seconds != expected_duration:
             issues.append(f"Duration should be {expected_duration}s, got {video.duration_seconds}s")
 

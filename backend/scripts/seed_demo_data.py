@@ -83,18 +83,21 @@ CAMPAIGNS = {
 
 async def create_demo_campaign(
     campaign_template: CampaignTemplate,
+    campaign_key: str,
 ) -> tuple[str, str]:
     """
     Create a demo campaign with session and project brief.
 
     Args:
         campaign_template: Campaign configuration
+        campaign_key: Campaign key (aura, ember, luxe, nova) for fixed project ID
 
     Returns:
         Tuple of (session_id, project_id)
     """
     session_id = f"demo_session_{uuid.uuid4().hex[:8]}"
-    project_id = f"demo_project_{uuid.uuid4().hex[:8]}"
+    # Use fixed project ID based on campaign key (e.g., "aura_smart_sneaker")
+    project_id = f"{campaign_key}_smart_sneaker" if campaign_key == "aura" else f"{campaign_key}_demo"
 
     # Create session
     session = SessionState(
@@ -161,7 +164,7 @@ async def seed_campaigns(campaign_names: list[str]) -> None:
             continue
 
         campaign = CAMPAIGNS[campaign_name]
-        await create_demo_campaign(campaign)
+        await create_demo_campaign(campaign, campaign_name)
 
     # Disconnect from Redis
     await redis_client.disconnect()

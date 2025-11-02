@@ -124,7 +124,8 @@ export function ProjectBriefPanel() {
           </div>
         )}
 
-        {brief.initial_sketch_url && (
+        {/* Only show initial sketch if no hero image has been selected */}
+        {!brief.selected_image && brief.initial_sketch_url && (
           <div>
             <div className="text-xs font-medium text-zinc-400 mb-2">Initial Sketch</div>
             <img

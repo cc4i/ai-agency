@@ -454,6 +454,14 @@ class VeoClient:
 
             # Add reference image if provided (for image-to-video)
             if reference_image:
+                # Ensure it's a string and strip whitespace
+                if not isinstance(reference_image, str):
+                    raise ValueError(f"reference_image must be a string, got {type(reference_image)}")
+
+                reference_image = reference_image.strip()
+
+                logger.info(f"Veo: reference_image={reference_image[:30]}... (len={len(reference_image)})")
+
                 # Check if it's a data URI (base64 encoded)
                 if reference_image.startswith("data:"):
                     # Extract base64 data from data URI

@@ -24,8 +24,10 @@ export interface ProjectBrief {
   initial_sketch_url?: string;
   selected_slogan?: string;
   selected_image?: {
+    asset_id: string;
     url: string;
-    prompt: string;
+    generation_params: any;
+    description: string;
   };
   created_at: string;
   updated_at: string;

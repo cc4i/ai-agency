@@ -54,7 +54,7 @@ export default function WorkspaceClient() {
 
   // IMPORTANT: Call hooks unconditionally (Rules of Hooks)
   // Even if IDs aren't ready yet - the hooks will handle it
-  const { sendAudio, sendTurnComplete, isConnected } = useWebSocket(sessionId, projectId);
+  const { sendAudio, sendMessage, sendTurnComplete, isConnected } = useWebSocket(sessionId, projectId);
 
   // Microphone
   const { isRecording, toggleRecording } = useMicrophone({
@@ -86,7 +86,7 @@ export default function WorkspaceClient() {
 
         {/* Main content container - Asset Display */}
         <div className="flex-1 flex flex-col overflow-hidden">
-          <AssetDisplay />
+          <AssetDisplay sendMessage={sendMessage} />
         </div>
 
         {/* Right Sidebar - Transcript */}
