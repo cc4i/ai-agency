@@ -81,9 +81,14 @@ class WebDevAgent(AgentBase):
             code=code, framework="vanilla", deployment_status="preview"
         )
 
-        logger.info(f"Web Dev completed: {code.asset_id}")
+        logger.info(f"[WEB_DEV] Web Dev completed: {code.asset_id}")
+        logger.info(f"[WEB_DEV] Output has code: {output.code is not None}")
+        logger.info(f"[WEB_DEV] Code HTML length: {len(output.code.html) if output.code else 0}")
 
-        return output.model_dump()
+        result = output.model_dump()
+        logger.info(f"[WEB_DEV] Returning result with keys: {list(result.keys())}")
+
+        return result
 
     async def _generate_landing_page(
         self,
@@ -115,6 +120,14 @@ class WebDevAgent(AgentBase):
             product_category, "Modern blues and grays"
         )
 
+        # Check if image_url is a data URI (base64) to avoid token overflow
+        # Data URIs can be 100k+ characters and blow up the token count
+        if image_url.startswith("data:"):
+            image_placeholder = "{{HERO_IMAGE_URL}}"  # Placeholder to be replaced
+            logger.info(f"Using placeholder for data URI image (length: {len(image_url)})")
+        else:
+            image_placeholder = image_url
+
         prompt = f"""
         Generate a beautiful "Coming Soon" landing page.
 
@@ -126,7 +139,8 @@ class WebDevAgent(AgentBase):
         COLOR SCHEME: {color_scheme}
 
         PAGE REQUIREMENTS:
-        1. Hero section with image: {image_url}
+        1. Hero section with image placeholder: {image_placeholder}
+           (Use this as the src attribute for the hero image)
         2. Prominent slogan display
         3. Countdown timer to launch date (30 days from now)
         4. Email signup form
@@ -164,11 +178,23 @@ class WebDevAgent(AgentBase):
             prompt=prompt, language="html"
         )
 
+        logger.info(f"[WEB_DEV] Received code response from Gemini: {len(code_response)} chars")
+        logger.info(f"[WEB_DEV] Response preview: {code_response[:200]}...")
+
         # Parse response into HTML, CSS, JS
         # In production, use better parsing
         html, css, js = self._parse_code_response(code_response, product_name, slogan, theme)
 
+        logger.info(f"[WEB_DEV] After parsing - HTML: {len(html)} chars, CSS: {len(css)} chars, JS: {len(js)} chars")
+
+        # Replace placeholder with actual image URL if we used a placeholder
+        if image_url.startswith("data:"):
+            html = html.replace("{{HERO_IMAGE_URL}}", image_url)
+            logger.info("[WEB_DEV] Replaced image placeholder with actual data URI")
+
         asset_id = f"landing_{uuid.uuid4().hex[:12]}"
+
+        logger.info(f"[WEB_DEV] Creating CodeAsset: {asset_id}")
 
         code_asset = CodeAsset(
             asset_id=asset_id,
@@ -189,7 +215,7 @@ class WebDevAgent(AgentBase):
         Parse code response into HTML, CSS, and JavaScript.
 
         Args:
-            response: Raw code response
+            response: Raw code response from Gemini Code Assist
             product_name: Product name
             slogan: Slogan
             theme: Theme
@@ -197,10 +223,55 @@ class WebDevAgent(AgentBase):
         Returns:
             Tuple of (html, css, javascript)
         """
-        # In production, parse actual response
-        # For now, generate template
+        import re
 
-        html = f"""<!DOCTYPE html>
+        logger.info(f"[WEB_DEV] Parsing code response ({len(response)} chars)")
+        logger.info(f"[WEB_DEV] Response starts with: {response[:100]}")
+
+        # Try to extract code blocks from markdown-style response
+        # Look for ```html, ```css, ```javascript code blocks
+
+        html = ""
+        css = ""
+        js = ""
+
+        # Extract HTML
+        html_match = re.search(r'```html\n(.*?)```', response, re.DOTALL | re.IGNORECASE)
+        if html_match:
+            html = html_match.group(1).strip()
+            logger.info(f"[WEB_DEV] ✓ Extracted HTML: {len(html)} chars")
+        else:
+            logger.warning(f"[WEB_DEV] ✗ No HTML code block found")
+
+        # Extract CSS
+        css_match = re.search(r'```css\n(.*?)```', response, re.DOTALL | re.IGNORECASE)
+        if css_match:
+            css = css_match.group(1).strip()
+            logger.info(f"[WEB_DEV] ✓ Extracted CSS: {len(css)} chars")
+        else:
+            logger.warning(f"[WEB_DEV] ✗ No CSS code block found")
+
+        # Extract JavaScript
+        js_match = re.search(r'```(?:javascript|js)\n(.*?)```', response, re.DOTALL | re.IGNORECASE)
+        if js_match:
+            js = js_match.group(1).strip()
+            logger.info(f"[WEB_DEV] ✓ Extracted JS: {len(js)} chars")
+        else:
+            logger.warning(f"[WEB_DEV] ✗ No JS code block found")
+
+        # If extraction failed, try to use the whole response as HTML
+        if not html and not css and not js:
+            logger.warning("No code blocks found, using response as HTML")
+            # Remove any code fences
+            cleaned = re.sub(r'```[\w]*\n?', '', response).strip()
+            html = cleaned if cleaned else response
+
+        # Fallback template if nothing was extracted
+        if not html or not css or not js:
+            logger.warning(f"Falling back to template (html={bool(html)}, css={bool(css)}, js={bool(js)})")
+
+            if not html:
+                html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -262,7 +333,8 @@ class WebDevAgent(AgentBase):
 </body>
 </html>"""
 
-        css = f"""/* {product_name} Landing Page - {theme} Theme */
+            if not css:
+                css = f"""/* {product_name} Landing Page - {theme} Theme */
 
 * {{
     margin: 0;
@@ -430,7 +502,8 @@ footer {{
     }}
 }}"""
 
-        javascript = """// Countdown Timer
+            if not js:
+                javascript = """// Countdown Timer
 const launchDate = new Date();
 launchDate.setDate(launchDate.getDate() + 30); // 30 days from now
 
@@ -476,6 +549,9 @@ document.getElementById('email-form').addEventListener('submit', function(e) {
         message.style.color = '#fca5a5';
     }
 });"""
+            else:
+                # Use the extracted JavaScript
+                javascript = js
 
         return html, css, javascript
 

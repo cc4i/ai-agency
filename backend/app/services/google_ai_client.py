@@ -940,7 +940,7 @@ class ChirpClient:
         self, audio_url: str, format: str = "txt", language: str = "en-US"
     ) -> Dict[str, Any]:
         """
-        Transcribe audio using Google Cloud Speech-to-Text (Chirp model).
+        Transcribe audio using Google Cloud Speech-to-Text v2 (Chirp model).
 
         Args:
             audio_url: URL to audio file
@@ -951,12 +951,38 @@ class ChirpClient:
             Transcription result
         """
         try:
-            logger.info(f"Chirp: Transcribing audio: {audio_url}")
+            from google.cloud.speech_v2 import SpeechClient
+            from google.cloud.speech_v2.types import cloud_speech
+            from google.api_core.client_options import ClientOptions
 
-            from google.cloud import speech_v1 as speech
+            # Use the location from settings
+            location = settings.google_cloud_location
 
-            # Create Speech client
-            client = speech.SpeechClient()
+            # Normalize language code to BCP-47 format (e.g., "en" -> "en-US")
+            # Chirp requires full language codes, not just language prefixes
+            original_language = language
+            if language == "en":
+                language = "en-US"
+            elif language == "es":
+                language = "es-ES"
+            elif language == "fr":
+                language = "fr-FR"
+            elif language == "de":
+                language = "de-DE"
+            elif language == "ja":
+                language = "ja-JP"
+            elif language == "zh":
+                language = "zh-CN"
+            # Add more mappings as needed
+
+            logger.info(f"Chirp: Transcribing audio with language={language} (original: {original_language}), location={location}")
+
+            # Create Speech v2 client with regional endpoint
+            # Chirp models require region-specific endpoints
+            api_endpoint = f"{location}-speech.googleapis.com"
+            client = SpeechClient(
+                client_options=ClientOptions(api_endpoint=api_endpoint)
+            )
 
             # Download audio file
             import httpx
@@ -965,31 +991,38 @@ class ChirpClient:
                 audio_response.raise_for_status()
                 audio_content = audio_response.content
 
-            # Configure recognition
-            audio = speech.RecognitionAudio(content=audio_content)
-            config = speech.RecognitionConfig(
-                encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
-                sample_rate_hertz=16000,
-                language_code=language,
-                enable_automatic_punctuation=True,
-                enable_word_time_offsets=(format in ["srt", "vtt"]),
-                model="chirp",  # Use Chirp model
+            # Configure recognition for Chirp model (v2 API)
+            config = cloud_speech.RecognitionConfig(
+                auto_decoding_config=cloud_speech.AutoDetectDecodingConfig(),
+                language_codes=[language],  # v2 uses language_codes (list)
+                model="chirp",  # Use Chirp model (chirp_2 and chirp_3 also available)
+                features=cloud_speech.RecognitionFeatures(
+                    enable_automatic_punctuation=True,
+                    enable_word_time_offsets=(format in ["srt", "vtt"]),
+                ),
+            )
+
+            request = cloud_speech.RecognizeRequest(
+                recognizer=f"projects/{self.project_id}/locations/{location}/recognizers/_",
+                config=config,
+                content=audio_content,
             )
 
             # Perform transcription asynchronously
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(
                 None,
-                lambda: client.recognize(config=config, audio=audio)
+                lambda: client.recognize(request=request)
             )
 
             # Extract transcription
             transcripts = []
             for result in response.results:
-                transcripts.append(result.alternatives[0].transcript)
+                if result.alternatives:
+                    transcripts.append(result.alternatives[0].transcript)
 
             full_text = " ".join(transcripts)
-            logger.info(f"Chirp: Transcribed {len(full_text)} characters")
+            logger.info(f"Chirp: Transcribed {len(full_text)} characters using Chirp model")
 
             return {
                 "text": full_text,

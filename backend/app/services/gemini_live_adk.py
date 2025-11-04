@@ -30,6 +30,9 @@ from google.adk import Agent, Runner
 from google.adk.runners import RunConfig, LiveRequestQueue
 from google.adk.agents.run_config import StreamingMode
 from google.adk.sessions import InMemorySessionService
+from google.adk.tools.preload_memory_tool import PreloadMemoryTool
+from google.adk.tools import load_memory
+
 from google import genai
 from google.genai import types
 
@@ -261,6 +264,9 @@ async def send_asset_added(agent_id: str, asset_type: str, asset_data: Dict[str,
         asset_type: Type of asset (image, video, audio, etc.)
         asset_data: Asset details (url, metadata, etc.)
     """
+    logger.info(f"[ASSET] Sending asset_added: agent={agent_id}, type={asset_type}")
+    logger.info(f"[ASSET] Asset data keys: {list(asset_data.keys()) if isinstance(asset_data, dict) else 'not a dict'}")
+
     await broadcast_to_frontend("asset_added", {
         "agent_id": agent_id,
         "asset_type": asset_type,
@@ -726,7 +732,8 @@ async def generate_audio_assets(
         await send_agent_status("audio_team", "complete", "")
 
         # Broadcast asset if audio was generated
-        if "audio_assets" in result or "jingle_url" in result:
+        # AudioTeamOutput contains: jingle, podcast_ad, transcription, proactive_suggestion
+        if "jingle" in result or "podcast_ad" in result:
             await send_asset_added("audio_team", "audio", result)
 
         tool_result = {
@@ -843,8 +850,16 @@ async def generate_landing_page(
         await send_agent_status("web_dev", "complete", "")
 
         # Broadcast asset if landing page was generated
-        if "landing_page_url" in result or "html" in result:
+        # WebDevOutput contains: code (CodeAsset), framework, deployment_status
+        logger.info(f"[WEB_DEV] Result keys: {list(result.keys())}")
+        logger.info(f"[WEB_DEV] Has 'code' key: {'code' in result}")
+
+        if "code" in result:
+            logger.info(f"[WEB_DEV] Broadcasting landing_page asset to frontend")
+            logger.info(f"[WEB_DEV] Code asset: {result['code']}")
             await send_asset_added("web_dev", "landing_page", result)
+        else:
+            logger.error(f"[WEB_DEV] No 'code' key in result, cannot broadcast asset")
 
         tool_result = {
             "success": True,

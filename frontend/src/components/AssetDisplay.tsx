@@ -190,27 +190,41 @@ function AudioTeamAssets({ data }: { data: any[] }) {
       </h3>
 
       <div className="space-y-4">
-        {assetData.jingle_url && (
+        {assetData.jingle?.url && (
           <div>
             <div className="text-sm font-medium text-zinc-400 mb-2">Jingle</div>
-            <audio src={assetData.jingle_url} controls className="w-full" />
-          </div>
-        )}
-
-        {assetData.voiceover_url && (
-          <div>
-            <div className="text-sm font-medium text-zinc-400 mb-2">Voiceover</div>
-            <audio src={assetData.voiceover_url} controls className="w-full" />
-            {assetData.voiceover_script && (
-              <div className="mt-2 text-xs text-zinc-500 italic">{assetData.voiceover_script}</div>
+            <audio src={assetData.jingle.url} controls className="w-full" />
+            {assetData.jingle.duration_seconds && (
+              <div className="mt-1 text-xs text-zinc-500">Duration: {assetData.jingle.duration_seconds}s</div>
             )}
           </div>
         )}
 
-        {assetData.podcast_ad_url && (
+        {assetData.podcast_ad?.url && (
           <div>
             <div className="text-sm font-medium text-zinc-400 mb-2">Podcast Ad</div>
-            <audio src={assetData.podcast_ad_url} controls className="w-full" />
+            <audio src={assetData.podcast_ad.url} controls className="w-full" />
+            {assetData.podcast_ad.script && (
+              <div className="mt-2 text-xs text-zinc-500 italic bg-zinc-800 rounded p-2">
+                "{assetData.podcast_ad.script}"
+              </div>
+            )}
+          </div>
+        )}
+
+        {assetData.transcription?.text && (
+          <div>
+            <div className="text-sm font-medium text-zinc-400 mb-2">Transcription</div>
+            <div className="text-xs text-zinc-400 bg-zinc-800 rounded p-3 whitespace-pre-wrap">
+              {assetData.transcription.text}
+            </div>
+          </div>
+        )}
+
+        {assetData.proactive_suggestion && (
+          <div className="bg-blue-900/20 border border-blue-800 rounded p-3">
+            <div className="text-sm font-medium text-blue-400 mb-1">💡 Agent Suggestion</div>
+            <div className="text-sm text-blue-300">{assetData.proactive_suggestion}</div>
           </div>
         )}
       </div>
@@ -222,31 +236,61 @@ function WebDevAssets({ data }: { data: any[] }) {
   const latestAsset = data[data.length - 1];
   const assetData = latestAsset.data;
 
+  // Extract HTML, CSS, JS from the nested code object
+  const code = assetData.code;
+  const html = code?.html || '';
+  const css = code?.css || '';
+  const js = code?.javascript || '';
+
+  // Combine into a complete HTML document with inline CSS and JS
+  const fullHTML = html.includes('<!DOCTYPE')
+    ? html  // If Gemini returned complete HTML, use it
+    : `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>${css}</style>
+</head>
+<body>
+  ${html}
+  <script>${js}</script>
+</body>
+</html>`;
+
+  // Create a blob URL for the iframe
+  const blob = new Blob([fullHTML], { type: 'text/html' });
+  const iframeSrc = URL.createObjectURL(blob);
+
   return (
     <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-4">
       <h3 className="text-base font-semibold text-white mb-3 flex items-center gap-2">
         💻 Landing Page
       </h3>
 
-      {assetData.preview_url && (
-        <div className="border border-zinc-700 rounded-lg overflow-hidden">
-          <iframe
-            src={assetData.preview_url}
-            className="w-full h-96"
-            title="Landing page preview"
-          />
+      {code && (
+        <div className="space-y-4">
+          <div className="border border-zinc-700 rounded-lg overflow-hidden bg-white">
+            <iframe
+              src={iframeSrc}
+              className="w-full h-[600px]"
+              title="Landing page preview"
+              sandbox="allow-scripts"
+            />
+          </div>
+
+          <div className="flex gap-2 text-xs text-zinc-500">
+            <span>HTML: {html.length} chars</span>
+            <span>•</span>
+            <span>CSS: {css.length} chars</span>
+            <span>•</span>
+            <span>JS: {js.length} chars</span>
+          </div>
         </div>
       )}
 
-      {assetData.deploy_url && (
-        <a
-          href={assetData.deploy_url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="mt-4 inline-block text-blue-400 hover:text-blue-300 text-sm"
-        >
-          View live page →
-        </a>
+      {!code && (
+        <div className="text-sm text-zinc-500">No landing page code available</div>
       )}
     </div>
   );
