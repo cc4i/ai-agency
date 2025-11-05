@@ -76,11 +76,30 @@ class RedisClient:
         )
 
     # Conversation History
+    # DEPRECATED: These methods will be replaced by Vertex AI Memory Bank
+    # See: app/services/memory_service.py
 
     async def add_conversation_message(
         self, session_id: str, message: ConversationMessage
     ) -> None:
-        """Add message to conversation history."""
+        """
+        Add message to conversation history.
+
+        DEPRECATED: This method is deprecated and will be removed in a future version.
+        Conversation history is now automatically persisted to Vertex AI Memory Bank
+        via callbacks when ENABLE_MEMORY_BANK=true.
+
+        For new implementations, enable Memory Bank in settings instead of using
+        this method directly.
+        """
+        import warnings
+        warnings.warn(
+            "add_conversation_message is deprecated. Use Vertex AI Memory Bank "
+            "with automated callbacks instead (ENABLE_MEMORY_BANK=true).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
         await self.client.lpush(  # type: ignore
             f"session:{session_id}:conversation", message.model_dump_json()
         )
@@ -88,7 +107,24 @@ class RedisClient:
     async def get_conversation_history(
         self, session_id: str, limit: int = 100
     ) -> List[ConversationMessage]:
-        """Retrieve conversation history."""
+        """
+        Retrieve conversation history.
+
+        DEPRECATED: This method is deprecated and will be removed in a future version.
+        Use Vertex AI Memory Bank's search_memory() for semantic search across
+        conversations when ENABLE_MEMORY_BANK=true.
+
+        For new implementations, use memory_service.search_memory() or the
+        load_memory tool instead.
+        """
+        import warnings
+        warnings.warn(
+            "get_conversation_history is deprecated. Use Vertex AI Memory Bank's "
+            "search_memory() for semantic retrieval (ENABLE_MEMORY_BANK=true).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
         messages = await self.client.lrange(  # type: ignore
             f"session:{session_id}:conversation", 0, limit - 1
         )

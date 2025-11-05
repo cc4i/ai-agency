@@ -33,6 +33,10 @@ from google.adk.sessions import InMemorySessionService
 from google.adk.tools.preload_memory_tool import PreloadMemoryTool
 from google.adk.tools import load_memory
 
+# Memory Bank integration
+from app.services.memory_service import memory_service
+# NOTE: after_agent_callback is not used - callbacks don't trigger in run_live() mode
+
 from google import genai
 from google.genai import types
 
@@ -951,6 +955,27 @@ Your role is to:
 
 ---
 
+# MEMORY & CONTEXT AWARENESS
+
+**PreloadMemoryTool** (Automatic):
+- At the start of each conversation, relevant memories from past sessions are automatically loaded
+- You don't need to call this tool - it runs automatically
+- Use this context to personalize the experience and recall past projects
+
+**load_memory Tool** (Manual):
+- Call this when you need to search for specific information from past conversations
+- Examples:
+  - User asks: "What was the slogan we used last time?" → Call `load_memory(query="previous campaign slogans")`
+  - User asks: "Remind me what we discussed about sneaker campaigns" → Call `load_memory(query="sneaker campaign discussion")`
+  - User references a past project → Call `load_memory(query="[product name] campaign")`
+
+**Guidelines**:
+- Reference past projects naturally when relevant: "Last time we worked on [product], you preferred [style]..."
+- Don't hallucinate past conversations - only reference what's actually in memory
+- If memory search returns no results, acknowledge that this might be the first time discussing this topic
+
+---
+
 # FUNCTION CALLING RULES
 
 **CRITICAL**: You MUST call the appropriate function when:
@@ -968,6 +993,7 @@ Your role is to:
 6. User requests video → FIRST verify image is selected, then `generate_social_video`
 7. User requests audio/music → `generate_audio_assets` (requires slogan)
 8. User requests landing page → FIRST verify image is selected, then `generate_landing_page`
+9. **User references past conversations/projects** → `load_memory` with relevant query
 
 **DO NOT**:
 - Narrate that you're calling a function—just call it.
@@ -1022,30 +1048,61 @@ When you call functions, they will automatically use this project context.
 
 
 # Create the Executive Producer agent with all tools
-executive_producer_agent = Agent(
-    name="executive_producer",
-    model="gemini-live-2.5-flash-preview-native-audio-09-2025",  # Vertex AI native audio model
-    description="Executive Producer for AI Agency Hub - coordinates creative campaign development",
-    instruction="",  # Will be set dynamically per session
-    tools=[
+agent_kwargs = {
+    "name": "executive_producer",
+    "model": "gemini-live-2.5-flash-preview-native-audio-09-2025",  # Vertex AI native audio model
+    "description": "Executive Producer for AI Agency Hub - coordinates creative campaign development",
+    "instruction": "",  # Will be set dynamically per session
+    "tools": [
+        # Campaign management tools
         update_project_brief,
         create_campaign_strategy,
         generate_hero_images,
         generate_social_video,
         generate_audio_assets,
         generate_landing_page,
+        # Memory Bank tools (enabled via feature flag)
+        PreloadMemoryTool() if settings.enable_memory_bank else None,
+        load_memory if settings.enable_memory_bank else None,
     ],
-)
+}
+
+# NOTE: after_agent_callback is NOT registered because it doesn't trigger in run_live() mode
+# Memory Bank persistence is handled manually on turn_complete events instead
+# See _agent_to_client_messaging() method for manual persistence logic
+
+executive_producer_agent = Agent(**agent_kwargs)
+
+# Remove None values from tools list (when Memory Bank is disabled)
+executive_producer_agent.tools = [t for t in executive_producer_agent.tools if t is not None]
 
 # Create session service and runner (reuse across connections)
 session_service = InMemorySessionService()
-runner = Runner(
-    app_name="ai_agency_hub",
-    agent=executive_producer_agent,
-    session_service=session_service,
-)
 
-logger.info("✓ ADK Executive Producer agent created with 6 tools")
+# Configure runner with Memory Bank support
+runner_kwargs = {
+    "app_name": "ai_agency_hub",
+    "agent": executive_producer_agent,
+    "session_service": session_service,
+}
+
+# Add Memory Bank service if enabled
+if settings.enable_memory_bank:
+    # Initialize memory service before passing to runner
+    memory_service._initialize()
+    if memory_service._service:
+        # Pass the underlying VertexAiMemoryBankService to runner
+        runner_kwargs["memory_service"] = memory_service._service
+        logger.info("✓ Memory Bank service registered with runner")
+    else:
+        logger.warning("⚠ Memory Bank service failed to initialize, running without memory")
+
+runner = Runner(**runner_kwargs)
+
+# Count tools for logging
+tool_count = len(executive_producer_agent.tools)
+memory_status = "with Memory Bank (turn_complete persistence)" if settings.enable_memory_bank else "without Memory Bank"
+logger.info(f"✓ ADK Executive Producer agent created with {tool_count} tools ({memory_status})")
 
 
 # ============================================================================
@@ -1171,6 +1228,9 @@ class GeminiLiveADKConnection:
             logger.info(f"Created new ADK session: {self.session_id}")
         else:
             logger.info(f"Resumed ADK session: {self.session_id}")
+
+        # Store session for Memory Bank persistence
+        self.session = session
 
         # Update agent instruction with project-specific system prompt
         executive_producer_agent.instruction = create_system_prompt(self.project_id)
@@ -1378,6 +1438,62 @@ class GeminiLiveADKConnection:
                         "type": "turn_complete",
                     }))
 
+                    # Persist conversation to Memory Bank after turn completes
+                    # NOTE: after_agent_callback doesn't trigger in run_live() mode,
+                    # so we manually persist here when turn_complete is detected
+                    if settings.enable_memory_bank and settings.memory_callback_enabled:
+                        try:
+                            from app.services.memory_service import memory_service
+
+                            logger.info(
+                                f"[Memory Bank] Turn complete detected, persisting session: "
+                                f"session_id={self.session_id}"
+                            )
+
+                            # IMPORTANT: Fetch the latest session state from session_service
+                            # The session object may have been updated by the runner with new events
+                            latest_session = await runner.session_service.get_session(
+                                app_name="ai_agency_hub",
+                                user_id=self.session_id,
+                                session_id=self.session_id,
+                            )
+
+                            if latest_session:
+                                # Log session state for debugging
+                                event_count = len(latest_session.events) if hasattr(latest_session, 'events') else 0
+                                logger.info(f"[Memory Bank] Retrieved session has {event_count} events")
+
+                                # Log session details
+                                logger.info(f"[Memory Bank] Session ID: {latest_session.id}")
+                                logger.info(f"[Memory Bank] Session app_name: {latest_session.app_name}")
+                                logger.info(f"[Memory Bank] Session user_id: {latest_session.user_id}")
+
+                                # Check if events have content
+                                if event_count > 0:
+                                    events_with_content = sum(
+                                        1 for e in latest_session.events
+                                        if hasattr(e, 'content') and e.content is not None
+                                    )
+                                    logger.info(f"[Memory Bank] Events with content: {events_with_content}/{event_count}")
+
+                                # Pass the Session object directly
+                                success = await memory_service.add_session_to_memory(
+                                    session=latest_session,
+                                )
+
+                                if success:
+                                    logger.info(f"[Memory Bank] ✓ Session {self.session_id} persisted successfully")
+                                else:
+                                    logger.warning(f"[Memory Bank] ⚠ Session {self.session_id} persistence skipped")
+                            else:
+                                logger.warning(f"[Memory Bank] ⚠ Could not retrieve session {self.session_id}")
+
+                        except Exception as e:
+                            logger.error(
+                                f"[Memory Bank] ✗ Failed to persist session {self.session_id}: {e}",
+                                exc_info=True
+                            )
+
                 # Handle interruption
                 if hasattr(event, 'interrupted') and event.interrupted:
                     await self.frontend_ws.send_text(json.dumps({
@@ -1390,13 +1506,26 @@ class GeminiLiveADKConnection:
                 break
 
     async def _save_transcript(self, role: str, text: str):
-        """Save conversation transcript to Redis."""
-        message = ConversationMessage(
-            role=role,
-            text=text,
-            timestamp=datetime.now(),
-        )
-        await redis_client.add_conversation_message(self.session_id, message)
+        """
+        Save conversation transcript.
+
+        When Memory Bank is enabled, conversation history is automatically
+        persisted via callbacks. This method only saves to Redis when Memory
+        Bank is disabled for backwards compatibility.
+        """
+        # Only save to Redis if Memory Bank is not enabled
+        # When Memory Bank is enabled, callbacks handle persistence automatically
+        if not settings.enable_memory_bank:
+            message = ConversationMessage(
+                role=role,
+                text=text,
+                timestamp=datetime.now(),
+            )
+            await redis_client.add_conversation_message(self.session_id, message)
+        else:
+            logger.debug(
+                f"[Transcript] Skipping Redis save (Memory Bank handles persistence)"
+            )
 
     async def disconnect(self):
         """Clean up ADK resources."""

@@ -51,6 +51,11 @@ class Settings(BaseSettings):
         "wss://us-central1-aiplatform.googleapis.com/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent"
     )
 
+    # Memory Bank Configuration (Vertex AI)
+    agent_engine_id: str = ""  # Agent Engine ID from setup_memory_bank.py
+    enable_memory_bank: bool = False  # Feature flag to enable Memory Bank
+    memory_callback_enabled: bool = False  # Enable automated memory saving via callbacks
+
     @property
     def redis_url(self) -> str:
         """Construct Redis URL from components."""

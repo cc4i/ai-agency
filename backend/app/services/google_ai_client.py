@@ -771,106 +771,99 @@ class LyriaClient:
         self, prompt: str, duration_seconds: int = 10, negative_prompt: str = None, seed: int = None
     ) -> bytes:
         """
-        Generate music using Lyria (lyria-002 model).
+        Generate music using Lyria 2 via direct REST API call.
 
         Args:
             prompt: Music generation prompt (US English)
-            duration_seconds: Music duration (note: Lyria generates 30s fixed)
+            duration_seconds: Music duration (note: Lyria always generates 32.8s)
             negative_prompt: Optional prompt describing elements to exclude
-            seed: Optional seed for deterministic output (incompatible with sample_count)
+            seed: Optional seed for deterministic output (mutually exclusive with sample_count)
 
         Returns:
-            Generated audio as bytes (WAV format, 48 kHz)
+            Generated audio as bytes (WAV format, 48 kHz, 32.8 seconds)
         """
         try:
+            import base64
+            import httpx
+            import google.auth
+            import google.auth.transport.requests
+
             logger.info(f"Lyria: Generating music with prompt: {prompt[:100]}...")
 
-            # Import Vertex AI Prediction API
-            from google.cloud import aiplatform
-            from google.protobuf import json_format
-            from google.protobuf.struct_pb2 import Value
-            import base64
+            # Build endpoint URL - MUST use :predict suffix
+            # Format: https://LOCATION-aiplatform.googleapis.com/v1/projects/PROJECT_ID/locations/LOCATION/publishers/google/models/lyria-002:predict
+            url = (
+                f"https://{self.location}-aiplatform.googleapis.com/v1/"
+                f"projects/{self.project_id}/locations/{self.location}/"
+                f"publishers/google/models/lyria-002:predict"
+            )
 
-            # Initialize Vertex AI
-            aiplatform.init(project=self.project_id, location=self.location)
+            logger.info(f"Lyria: Endpoint URL: {url}")
 
-            # Prepare request payload
-            instance = {
-                "prompt": prompt
-            }
+            # Prepare request body
+            instance = {"prompt": prompt}
             if negative_prompt:
                 instance["negative_prompt"] = negative_prompt
             if seed is not None:
                 instance["seed"] = seed
 
-            # Parameters (sample_count if no seed)
+            # Parameters: use sample_count OR seed, not both
             parameters = {}
             if seed is None:
                 parameters["sample_count"] = 1
 
-            logger.info(f"Lyria: Calling lyria-002 model in {self.location}...")
+            request_body = {"instances": [instance]}
+            if parameters:
+                request_body["parameters"] = parameters
 
-            # Create endpoint URL
-            endpoint = f"projects/{self.project_id}/locations/{self.location}/publishers/google/models/lyria-002"
+            logger.info(f"Lyria: Request: {request_body}")
 
-            # Use PredictionServiceClient for synchronous predict
-            from google.cloud.aiplatform_v1.services.prediction_service import PredictionServiceClient
+            # Get Google Cloud access token for authentication
+            credentials, _ = google.auth.default()
+            auth_req = google.auth.transport.requests.Request()
+            credentials.refresh(auth_req)
+            access_token = credentials.token
 
-            # Create client
-            client = PredictionServiceClient(
-                client_options={"api_endpoint": f"{self.location}-aiplatform.googleapis.com"}
-            )
+            # Make HTTP POST request
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json"
+            }
 
-            # Prepare instances and parameters as Value objects
-            instances_value = [json_format.ParseDict(instance, Value())]
-            parameters_value = json_format.ParseDict(parameters, Value()) if parameters else None
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                response = await client.post(url, json=request_body, headers=headers)
 
-            # Call predict API synchronously (in executor to avoid blocking)
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,
-                lambda: client.predict(
-                    endpoint=endpoint,
-                    instances=instances_value,
-                    parameters=parameters_value
-                )
-            )
-
-            # Extract audio from response
-            if not response.predictions:
-                logger.warning("Lyria: No predictions in response")
-                return b""
-
-            # Get first prediction
-            prediction = response.predictions[0]
-
-            # Extract audioContent (base64-encoded WAV)
-            audio_content_b64 = None
-            if hasattr(prediction, 'audioContent'):
-                audio_content_b64 = prediction.audioContent
-            elif isinstance(prediction, dict) and 'audioContent' in prediction:
-                audio_content_b64 = prediction['audioContent']
-            else:
-                # Try to access as struct
-                try:
-                    audio_content_b64 = prediction.get('audioContent')
-                except:
-                    logger.error(f"Lyria: Could not extract audioContent from prediction: {type(prediction)}")
+                if response.status_code != 200:
+                    logger.error(f"Lyria: HTTP {response.status_code}: {response.text}")
                     return b""
 
-            if not audio_content_b64:
-                logger.warning("Lyria: No audioContent in prediction")
+                result = response.json()
+                logger.info(f"Lyria: Response keys: {list(result.keys())}")
+
+            # Extract predictions
+            if "predictions" not in result or not result["predictions"]:
+                logger.error(f"Lyria: No predictions in response: {result}")
                 return b""
+
+            prediction = result["predictions"][0]
+            logger.info(f"Lyria: Prediction keys: {list(prediction.keys())}")
+
+            # Extract bytesBase64Encoded (base64-encoded WAV)
+            if "bytesBase64Encoded" not in prediction:
+                logger.error(f"Lyria: No bytesBase64Encoded in prediction. Available keys: {prediction.keys()}")
+                return b""
+
+            audio_content_b64 = prediction["bytesBase64Encoded"]
+            logger.info(f"Lyria: bytesBase64Encoded base64 length: {len(audio_content_b64)} characters")
 
             # Decode base64 to bytes
             audio_bytes = base64.b64decode(audio_content_b64)
-            logger.info(f"Lyria: Generated {len(audio_bytes)} bytes of music (WAV, 48kHz, 30s)")
+            logger.info(f"Lyria: ✓ Generated {len(audio_bytes)} bytes of music (WAV, 48kHz, 32.8s)")
 
             return audio_bytes
 
         except Exception as e:
             logger.error(f"Lyria music generation error: {e}", exc_info=True)
-            # Return empty bytes instead of raising to allow graceful degradation
             logger.warning("Lyria: Returning empty bytes due to error")
             return b""
 
