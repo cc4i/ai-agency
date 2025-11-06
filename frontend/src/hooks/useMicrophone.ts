@@ -38,7 +38,7 @@ export function useMicrophone({
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationFrameRef = useRef<number>();
 
-  const { setMicrophoneActive, setAudioLevel, producerSpeaking } = useProjectStore();
+  const { setMicrophoneActive, setAudioLevel, isProducerSpeaking } = useProjectStore();
 
   const monitorAudioLevel = useCallback(() => {
     if (!analyserRef.current) return;
@@ -91,11 +91,12 @@ export function useMicrophone({
       const bufferSize = 4096; // Larger chunks for better quality and smoother streaming (~256ms at 16kHz)
       const processor = audioContextRef.current.createScriptProcessor(bufferSize, 1, 1);
 
+      let audioChunkCount = 0;
       processor.onaudioprocess = (e) => {
         const inputData = e.inputBuffer.getChannelData(0);
 
         // Turn-taking: Don't send audio if Gemini is speaking
-        const currentProducerSpeaking = useProjectStore.getState().producerSpeaking;
+        const currentProducerSpeaking = useProjectStore.getState().isProducerSpeaking;
         if (currentProducerSpeaking) {
           // Gemini is speaking, don't interrupt
           console.log('[Turn-Taking] Gemini speaking, pausing user audio');
@@ -111,6 +112,10 @@ export function useMicrophone({
         }
 
         // Send ALL audio (including silence) - let Gemini's VAD handle detection
+        audioChunkCount++;
+        if (audioChunkCount % 10 === 0) {
+          console.log(`[Mic] Captured and sending audio chunk #${audioChunkCount} (${pcm16.buffer.byteLength} bytes)`);
+        }
         onAudioData(pcm16.buffer);
       };
 

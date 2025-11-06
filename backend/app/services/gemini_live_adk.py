@@ -1360,7 +1360,7 @@ class GeminiLiveADKConnection:
         # Configure run with audio modality and session resumption
         run_config = RunConfig(
             streaming_mode=StreamingMode.BIDI,
-            response_modalities=[types.Modality.AUDIO],  # Audio-first interface (enum)
+            response_modalities=[types.Modality.AUDIO],  # Audio-first interface
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(
@@ -1379,7 +1379,7 @@ class GeminiLiveADKConnection:
             ),
             session_resumption=types.SessionResumptionConfig(transparent=True),  # Enable resumption
             output_audio_transcription={},  # Get transcripts from AI
-            input_audio_transcription = {},
+            input_audio_transcription={},
         )
 
         # Start live streaming session
@@ -1444,13 +1444,55 @@ class GeminiLiveADKConnection:
                         logger.error(f"[ADK] Error processing audio chunk: {e}", exc_info=True)
                         continue
 
-                # Handle text input (if needed)
+                # Handle text input
                 elif message.get("type") == "text" and message.get("text"):
+                    text = message["text"]
+                    logger.info(f"[ADK] 💬 Received text message: {text[:100]}{'...' if len(text) > 100 else ''}")
+
                     content = types.Content(
                         role="user",
-                        parts=[types.Part.from_text(text=message["text"])]
+                        parts=[types.Part.from_text(text=text)]
                     )
                     self.live_request_queue.send_content(content=content)
+                    logger.info(f"[ADK] ✓ Text message sent to Gemini")
+
+                # Handle image upload
+                elif message.get("type") == "image" and message.get("data"):
+                    image_data = message["data"]
+                    logger.info(f"[ADK] 🖼️ Received image upload (size: {len(image_data)} chars)")
+
+                    try:
+                        # Extract base64 data (handle data URIs like "data:image/png;base64,...")
+                        if image_data.startswith("data:"):
+                            # Split data URI format
+                            header, base64_data = image_data.split(",", 1)
+                            mime_type = header.split(";")[0].replace("data:", "")
+                        else:
+                            # Assume raw base64
+                            base64_data = image_data
+                            mime_type = "image/png"  # default
+
+                        # Decode base64 to bytes
+                        image_bytes = base64.b64decode(base64_data)
+
+                        logger.info(f"[ADK] Image decoded: {len(image_bytes)} bytes, mime={mime_type}")
+
+                        # Create content with image
+                        content = types.Content(
+                            role="user",
+                            parts=[
+                                types.Part.from_bytes(
+                                    data=image_bytes,
+                                    mime_type=mime_type
+                                )
+                            ]
+                        )
+                        self.live_request_queue.send_content(content=content)
+                        logger.info(f"[ADK] ✓ Image sent to Gemini")
+
+                    except Exception as e:
+                        logger.error(f"[ADK] ✗ Error processing image: {e}", exc_info=True)
+                        continue
 
                 # Handle image selection from UI
                 elif message.get("type") == "update_brief" and message.get("data"):
@@ -1481,6 +1523,27 @@ class GeminiLiveADKConnection:
                                     {"selected_image": selected_image}
                                 )
 
+                                # ADD HERO IMAGE SELECTION EVENT TO MEMORY BANK
+                                # This captures the user's asset selection for conversation memory
+                                if hasattr(self, 'session') and self.session:
+                                    from google.adk.events import Event
+
+                                    # Create descriptive text for the selection
+                                    description = selected_image.description or "Hero image"
+                                    selection_text = f"Selected hero image: {selected_image.asset_id} - {description}"
+
+                                    selection_event = Event(
+                                        author="user",
+                                        content=types.Content(
+                                            role="user",
+                                            parts=[types.Part.from_text(text=selection_text)]
+                                        )
+                                    )
+                                    await self.session_service.append_event(self.session, selection_event)
+                                    logger.info(f"[Memory Bank] ✓ Added hero image selection event: {selected_image.asset_id}")
+                                else:
+                                    logger.warning(f"[Memory Bank] ⚠ Session not available, skipping hero image selection event")
+
                                 # Broadcast update to frontend
                                 await self.frontend_ws.send_text(json.dumps({
                                     "type": "brief_update",
@@ -1503,6 +1566,65 @@ class GeminiLiveADKConnection:
                                     "type": "error",
                                     "data": {
                                         "message": "Failed to update selected image",
+                                        "error": str(e)
+                                    }
+                                }))
+                            except:
+                                pass
+
+                    # Handle slogan selection from UI
+                    elif "selected_slogan" in data:
+                        slogan = data["selected_slogan"]
+                        logger.info(f"[ADK] User selected slogan via UI: {slogan[:50]}...")
+
+                        # Update project brief in Redis
+                        try:
+                            brief = await redis_client.get_project_brief(self.project_id)
+                            if brief:
+                                updated_brief = await redis_client.update_project_brief(
+                                    self.project_id,
+                                    {"selected_slogan": slogan}
+                                )
+
+                                # ADD SLOGAN SELECTION EVENT TO MEMORY BANK
+                                if hasattr(self, 'session') and self.session:
+                                    from google.adk.events import Event
+
+                                    selection_text = f"Selected campaign slogan: \"{slogan}\""
+
+                                    selection_event = Event(
+                                        author="user",
+                                        content=types.Content(
+                                            role="user",
+                                            parts=[types.Part.from_text(text=selection_text)]
+                                        )
+                                    )
+                                    await self.session_service.append_event(self.session, selection_event)
+                                    logger.info(f"[Memory Bank] ✓ Added slogan selection event")
+                                else:
+                                    logger.warning(f"[Memory Bank] ⚠ Session not available, skipping slogan selection event")
+
+                                # Broadcast update to frontend
+                                await self.frontend_ws.send_text(json.dumps({
+                                    "type": "brief_update",
+                                    "data": {
+                                        "brief": updated_brief.model_dump(mode="json"),
+                                        "changed_fields": ["selected_slogan"]
+                                    }
+                                }))
+
+                                logger.info(f"[ADK] ✓ Updated project brief with selected slogan")
+                                logger.info(f"[ADK] ✓ Broadcasted brief_update to frontend")
+                            else:
+                                logger.error(f"[ADK] Project brief not found for {self.project_id}")
+                        except Exception as e:
+                            logger.error(f"[ADK] ✗ Failed to update brief with selected slogan: {e}", exc_info=True)
+                            # Send error to frontend
+                            try:
+                                await self.frontend_ws.send_text(json.dumps({
+                                    "type": "error",
+                                    "data": {
+                                        "message": "Failed to update selected slogan",
                                         "error": str(e)
                                     }
                                 }))
@@ -1544,7 +1666,7 @@ class GeminiLiveADKConnection:
                                 parts=[types.Part.from_text(text=user_text)]
                             )
                         )
-                        await session_service.append_event(self.session, user_event)
+                        await self.session_service.append_event(self.session, user_event)
                         logger.debug(f"[Memory Bank] Added user text event: {user_text[:50]}...")
 
                 # Handle output transcription (assistant speech → text)
@@ -1568,7 +1690,7 @@ class GeminiLiveADKConnection:
                                 parts=[types.Part.from_text(text=transcript_text)]
                             )
                         )
-                        await session_service.append_event(self.session, assistant_event)
+                        await self.session_service.append_event(self.session, assistant_event)
                         logger.debug(f"[Memory Bank] Added assistant text event: {transcript_text[:50]}...")
 
                     # Send to frontend (matching expected format)

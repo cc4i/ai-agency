@@ -13,7 +13,8 @@
 
 import { useProjectStore } from '@/stores/useProjectStore';
 import { cn } from '@/lib/utils';
-import { useState } from 'react';
+import { useState, useEffect, useMemo } from 'react';
+import { ExternalLink } from 'lucide-react';
 
 interface AssetDisplayProps {
   sendMessage?: (message: any) => void;
@@ -243,9 +244,11 @@ function WebDevAssets({ data }: { data: any[] }) {
   const js = code?.javascript || '';
 
   // Combine into a complete HTML document with inline CSS and JS
-  const fullHTML = html.includes('<!DOCTYPE')
-    ? html  // If Gemini returned complete HTML, use it
-    : `<!DOCTYPE html>
+  // Use useMemo to avoid recreating the HTML string on every render
+  const fullHTML = useMemo(() => {
+    return html.includes('<!DOCTYPE')
+      ? html  // If Gemini returned complete HTML, use it
+      : `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
@@ -257,18 +260,58 @@ function WebDevAssets({ data }: { data: any[] }) {
   <script>${js}</script>
 </body>
 </html>`;
+  }, [html, css, js]);
 
-  // Create a blob URL for the iframe
-  const blob = new Blob([fullHTML], { type: 'text/html' });
-  const iframeSrc = URL.createObjectURL(blob);
+  // Create and manage blob URL lifecycle with useEffect
+  const [iframeSrc, setIframeSrc] = useState<string>('');
+
+  useEffect(() => {
+    // Create blob URL
+    const blob = new Blob([fullHTML], { type: 'text/html' });
+    const blobUrl = URL.createObjectURL(blob);
+    setIframeSrc(blobUrl);
+
+    // Cleanup: Revoke blob URL when component unmounts or fullHTML changes
+    return () => {
+      URL.revokeObjectURL(blobUrl);
+    };
+  }, [fullHTML]);
+
+  // Handler to open landing page in new window
+  const handleOpenInBrowser = () => {
+    // Create a fresh blob URL for the new window to avoid revocation issues
+    const blob = new Blob([fullHTML], { type: 'text/html' });
+    const newBlobUrl = URL.createObjectURL(blob);
+    const newWindow = window.open(newBlobUrl, '_blank');
+
+    // Clean up the blob URL after the window opens
+    // Give it a bit of time to load before revoking
+    if (newWindow) {
+      setTimeout(() => {
+        URL.revokeObjectURL(newBlobUrl);
+      }, 1000);
+    }
+  };
 
   return (
     <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-4">
-      <h3 className="text-base font-semibold text-white mb-3 flex items-center gap-2">
-        💻 Landing Page
-      </h3>
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-base font-semibold text-white flex items-center gap-2">
+          💻 Landing Page
+        </h3>
+        {code && (
+          <button
+            onClick={handleOpenInBrowser}
+            className="flex items-center gap-2 px-3 py-1.5 text-sm text-zinc-300 hover:text-white bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 hover:border-zinc-600 rounded-lg transition-colors"
+            title="Open in new tab"
+          >
+            <ExternalLink className="w-4 h-4" />
+            <span>Open in Browser</span>
+          </button>
+        )}
+      </div>
 
-      {code && (
+      {code && iframeSrc && (
         <div className="space-y-4">
           <div className="border border-zinc-700 rounded-lg overflow-hidden bg-white">
             <iframe
@@ -287,6 +330,10 @@ function WebDevAssets({ data }: { data: any[] }) {
             <span>JS: {js.length} chars</span>
           </div>
         </div>
+      )}
+
+      {code && !iframeSrc && (
+        <div className="text-sm text-zinc-500">Loading preview...</div>
       )}
 
       {!code && (

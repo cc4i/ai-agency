@@ -158,6 +158,11 @@ export function useWebSocket(
             transcriptBuffer.current = null; // Clear buffer on interruption
             break;
 
+          case 'connection_established':
+            console.log('[WebSocket] Connection established:', message.data);
+            // Backend confirms connection is ready
+            break;
+
           case 'error':
             console.error('WebSocket error:', message.data);
             addAnnouncement({
@@ -538,7 +543,10 @@ export function useWebSocket(
         data: base64,
       };
 
+      logger.debug(`[Audio] Sending ${bytes.byteLength} bytes (base64: ${base64.length} chars)`);
       wsRef.current.send(JSON.stringify(message));
+    } else {
+      logger.warn(`[Audio] Cannot send - WebSocket state: ${wsRef.current?.readyState}`);
     }
   }, []);
 

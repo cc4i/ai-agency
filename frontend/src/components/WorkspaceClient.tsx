@@ -15,12 +15,12 @@ import { useEffect, useState } from 'react';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { useMicrophone } from '@/hooks/useMicrophone';
 import { ProjectBriefPanel } from './ProjectBriefPanel';
-import { MicrophoneInterface } from './MicrophoneInterface';
 import { AgentStatusBar } from './AgentStatusBar';
 import { AssetDisplay } from './AssetDisplay';
-import { ProducerAnnouncements } from './ProducerAnnouncements';
 import { TranscriptDisplay } from './TranscriptDisplay';
 import { ConfigurationScreen } from './ConfigurationScreen';
+import { ChatInputBar } from './ChatInputBar';
+import { CollapsibleAnnouncements } from './CollapsibleAnnouncements';
 import { useProjectStore } from '@/stores/useProjectStore';
 
 export default function WorkspaceClient() {
@@ -113,6 +113,27 @@ export default function WorkspaceClient() {
     // WebSocket will disconnect automatically via useEffect cleanup when dependencies change
   };
 
+  // Handler for sending text messages
+  const handleSendText = (text: string) => {
+    sendMessage({
+      type: 'text',
+      text: text,
+    });
+  };
+
+  // Handler for sending images
+  const handleSendImage = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const base64 = e.target?.result as string;
+      sendMessage({
+        type: 'image',
+        data: base64,
+      });
+    };
+    reader.readAsDataURL(file);
+  };
+
   return (
     <div className="h-screen bg-black text-white flex flex-col overflow-hidden">
       {/* Agent Status Bar */}
@@ -136,14 +157,20 @@ export default function WorkspaceClient() {
         <TranscriptDisplay />
       </div>
 
-      {/* Producer Announcements - Bottom Panel */}
-      <ProducerAnnouncements />
+      {/* Chat Input Bar - Above Announcements */}
+      <ChatInputBar
+        onSendText={handleSendText}
+        onSendImage={handleSendImage}
+        onToggleMic={toggleRecording}
+        isRecording={isRecording}
+        isConnected={isConnected}
+      />
 
-      {/* Microphone Interface - Fixed Center Bottom */}
-      <MicrophoneInterface isRecording={isRecording} onToggle={toggleRecording} />
+      {/* Collapsible Announcements - Bottom */}
+      <CollapsibleAnnouncements />
 
-      {/* Session Info - Bottom Right */}
-      <div className="fixed bottom-4 right-4 text-xs text-zinc-600">
+      {/* Session Info - Bottom Right (only visible when announcements collapsed) */}
+      <div className="fixed bottom-4 right-16 text-xs text-zinc-600 pointer-events-none">
         <div>Session: {sessionId}</div>
       </div>
     </div>

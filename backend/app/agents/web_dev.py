@@ -173,24 +173,14 @@ class WebDevAgent(AgentBase):
         Make it visually stunning and {brand_tone}!
         """
 
-        # Generate code using Gemini Code Assist
-        code_response = await code_assist_client.generate_code(
-            prompt=prompt, language="html"
-        )
+        # SKIP Gemini Code Assist - Always use modern template for better quality
+        # (Gemini's generated landing pages are too simple)
+        logger.info(f"[WEB_DEV] Using modern template instead of Gemini generation")
 
-        logger.info(f"[WEB_DEV] Received code response from Gemini: {len(code_response)} chars")
-        logger.info(f"[WEB_DEV] Response preview: {code_response[:200]}...")
+        # Load and populate the modern template directly with image URL
+        html, css, js = self._load_modern_template(product_name, slogan, key_features, image_url)
 
-        # Parse response into HTML, CSS, JS
-        # In production, use better parsing
-        html, css, js = self._parse_code_response(code_response, product_name, slogan, theme)
-
-        logger.info(f"[WEB_DEV] After parsing - HTML: {len(html)} chars, CSS: {len(css)} chars, JS: {len(js)} chars")
-
-        # Replace placeholder with actual image URL if we used a placeholder
-        if image_url.startswith("data:"):
-            html = html.replace("{{HERO_IMAGE_URL}}", image_url)
-            logger.info("[WEB_DEV] Replaced image placeholder with actual data URI")
+        logger.info(f"[WEB_DEV] After template loading - HTML: {len(html)} chars, CSS: {len(css)} chars, JS: {len(js)} chars")
 
         asset_id = f"landing_{uuid.uuid4().hex[:12]}"
 
@@ -208,8 +198,133 @@ class WebDevAgent(AgentBase):
 
         return code_asset
 
+    def _load_modern_template(
+        self,
+        product_name: str,
+        slogan: str,
+        key_features: list,
+        image_url: str = ""
+    ) -> tuple[str, str, str]:
+        """
+        Load the modern landing page template and extract HTML, CSS, JS.
+
+        Args:
+            product_name: Product name
+            slogan: Campaign slogan
+            key_features: Product features list
+            image_url: Hero image URL
+
+        Returns:
+            Tuple of (html, css, javascript)
+        """
+        import os
+        import re
+
+        template_path = os.path.join(
+            os.path.dirname(__file__),
+            "..",
+            "..",
+            "templates",
+            "modern_landing_page.html"
+        )
+
+        try:
+            with open(template_path, 'r', encoding='utf-8') as f:
+                template_content = f.read()
+
+            # Apply template variables
+            html = self._apply_template_variables(
+                template_content, product_name, slogan, key_features, image_url
+            )
+
+            logger.info(f"[WEB_DEV] ✓ Loaded modern template ({len(html)} chars)")
+
+            # Extract CSS from <style> tags
+            css_match = re.search(r'<style>(.*?)</style>', html, re.DOTALL)
+            css = css_match.group(1).strip() if css_match else ""
+            logger.info(f"[WEB_DEV] ✓ Extracted CSS from template ({len(css)} chars)")
+
+            # Extract JS from <script> tags
+            js_match = re.search(r'<script>(.*?)</script>', html, re.DOTALL)
+            js = js_match.group(1).strip() if js_match else ""
+            logger.info(f"[WEB_DEV] ✓ Extracted JS from template ({len(js)} chars)")
+
+            return html, css, js
+
+        except FileNotFoundError:
+            logger.error(f"[WEB_DEV] ✗ Modern template not found at {template_path}")
+            # Return empty strings to trigger fallback
+            return "", "", ""
+
+    def _apply_template_variables(
+        self,
+        template: str,
+        product_name: str,
+        slogan: str,
+        key_features: list,
+        image_url: str = ""
+    ) -> str:
+        """
+        Apply variable replacements to landing page template.
+
+        Args:
+            template: HTML template with placeholders
+            product_name: Product name
+            slogan: Campaign slogan
+            key_features: List of product features
+            image_url: Hero image URL
+
+        Returns:
+            Template with variables replaced
+        """
+        # Extract up to 3 features
+        features = []
+        default_features = [
+            {"title": "Innovation", "description": "Experience cutting-edge features"},
+            {"title": "Quality", "description": "Premium craftsmanship and materials"},
+            {"title": "Design", "description": "Beautiful aesthetics meets functionality"}
+        ]
+
+        for i in range(3):
+            if i < len(key_features):
+                # If key_features contains strings, use them
+                if isinstance(key_features[i], str):
+                    features.append({
+                        "title": key_features[i].split(':')[0].strip() if ':' in key_features[i] else key_features[i],
+                        "description": key_features[i].split(':')[1].strip() if ':' in key_features[i] else f"Experience {key_features[i].lower()}"
+                    })
+                # If key_features contains dicts
+                elif isinstance(key_features[i], dict):
+                    features.append(key_features[i])
+            else:
+                features.append(default_features[i])
+
+        # Use placeholder image if no URL provided
+        if not image_url:
+            image_url = "https://images.unsplash.com/photo-1556906781-9cba4c2bc7ec?w=1200&h=800&fit=crop"
+
+        # Apply replacements
+        result = template
+        result = result.replace("{{PRODUCT_NAME}}", product_name)
+        result = result.replace("{{SLOGAN}}", slogan)
+        result = result.replace("{{HERO_IMAGE_URL}}", image_url)
+        result = result.replace("{{FEATURE_1_TITLE}}", features[0]["title"])
+        result = result.replace("{{FEATURE_1_DESC}}", features[0]["description"])
+        result = result.replace("{{FEATURE_2_TITLE}}", features[1]["title"])
+        result = result.replace("{{FEATURE_2_DESC}}", features[1]["description"])
+        result = result.replace("{{FEATURE_3_TITLE}}", features[2]["title"])
+        result = result.replace("{{FEATURE_3_DESC}}", features[2]["description"])
+
+        logger.info(f"[WEB_DEV] Applied template variables for {product_name}")
+        return result
+
     def _parse_code_response(
-        self, response: str, product_name: str, slogan: str, theme: str
+        self,
+        response: str,
+        product_name: str,
+        slogan: str,
+        theme: str,
+        key_features: list
     ) -> tuple[str, str, str]:
         """
         Parse code response into HTML, CSS, and JavaScript.
@@ -219,6 +334,7 @@ class WebDevAgent(AgentBase):
             product_name: Product name
             slogan: Slogan
             theme: Theme
+            key_features: Product features list
 
         Returns:
             Tuple of (html, css, javascript)
@@ -268,9 +384,46 @@ class WebDevAgent(AgentBase):
 
         # Fallback template if nothing was extracted
         if not html or not css or not js:
-            logger.warning(f"Falling back to template (html={bool(html)}, css={bool(css)}, js={bool(js)})")
+            logger.warning(f"Falling back to modern template (html={bool(html)}, css={bool(css)}, js={bool(js)})")
 
-            if not html:
+            # ALWAYS load modern template as fallback (don't use partial/broken code from Gemini)
+            # Load modern landing page template
+            import os
+            template_path = os.path.join(
+                os.path.dirname(__file__),
+                "..",
+                "..",
+                "templates",
+                "modern_landing_page.html"
+            )
+
+            try:
+                with open(template_path, 'r', encoding='utf-8') as f:
+                    template_content = f.read()
+
+                # Apply template variables
+                html = self._apply_template_variables(
+                    template_content, product_name, slogan, key_features
+                )
+
+                logger.info(f"[WEB_DEV] ✓ Loaded modern template ({len(html)} chars)")
+
+                # Extract CSS and JS from the template
+                # CSS is between <style> tags
+                css_match = re.search(r'<style>(.*?)</style>', html, re.DOTALL)
+                if css_match:
+                    css = css_match.group(1).strip()
+                    logger.info(f"[WEB_DEV] ✓ Extracted CSS from template ({len(css)} chars)")
+
+                # JS is between <script> tags
+                js_match = re.search(r'<script>(.*?)</script>', html, re.DOTALL)
+                if js_match:
+                    js = js_match.group(1).strip()
+                    logger.info(f"[WEB_DEV] ✓ Extracted JS from template ({len(js)} chars)")
+
+            except FileNotFoundError:
+                logger.error(f"[WEB_DEV] ✗ Modern template not found at {template_path}")
+                # Fallback to basic template
                 html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>

@@ -1,0 +1,807 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aura - Coming Soon</title>
+    <style>
+        /* [Complete CSS from the template - same as above] */
+        :root {
+            --primary-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            --secondary-gradient: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            --dark-bg: #0a0a0a;
+            --glass-bg: rgba(255, 255, 255, 0.1);
+            --glass-border: rgba(255, 255, 255, 0.18);
+            --text-primary: #ffffff;
+            --text-secondary: rgba(255, 255, 255, 0.7);
+            --accent-color: #667eea;
+            --accent-glow: rgba(102, 126, 234, 0.5);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--dark-bg);
+            color: var(--text-primary);
+            overflow-x: hidden;
+            line-height: 1.6;
+        }
+
+        /* Animated Background */
+        .animated-bg {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: -1;
+            background: var(--primary-gradient);
+            opacity: 0.9;
+        }
+
+        .animated-bg::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle, rgba(255,255,255,0.1) 1px, transparent 1px);
+            background-size: 50px 50px;
+            animation: moveGrid 20s linear infinite;
+        }
+
+        @keyframes moveGrid {
+            0% { transform: translate(0, 0); }
+            100% { transform: translate(50px, 50px); }
+        }
+
+        /* Floating Particles */
+        .particles {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: -1;
+            pointer-events: none;
+        }
+
+        .particle {
+            position: absolute;
+            background: white;
+            border-radius: 50%;
+            opacity: 0.3;
+            animation: float 15s infinite;
+        }
+
+        @keyframes float {
+            0%, 100% { transform: translateY(0) translateX(0); }
+            25% { transform: translateY(-100px) translateX(50px); }
+            50% { transform: translateY(-200px) translateX(-50px); }
+            75% { transform: translateY(-100px) translateX(50px); }
+        }
+
+        /* Container */
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 0 2rem;
+        }
+
+        /* Hero Section */
+        .hero {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            position: relative;
+            padding: 4rem 2rem;
+        }
+
+        .hero-image-container {
+            position: relative;
+            width: 100%;
+            max-width: 900px;
+            margin-bottom: 3rem;
+            border-radius: 2rem;
+            overflow: hidden;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+        }
+
+        .hero-image {
+            width: 100%;
+            height: auto;
+            display: block;
+            animation: kenBurns 20s ease-in-out infinite alternate;
+        }
+
+        @keyframes kenBurns {
+            0% { transform: scale(1); }
+            100% { transform: scale(1.1); }
+        }
+
+        .hero-image-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(180deg, transparent 0%, rgba(0,0,0,0.7) 100%);
+        }
+
+        /* Animated Gradient Text */
+        .product-name {
+            font-size: clamp(3rem, 10vw, 8rem);
+            font-weight: 900;
+            letter-spacing: -0.05em;
+            line-height: 1;
+            background: linear-gradient(45deg, #fff, #667eea, #f5576c, #fff);
+            background-size: 300% 300%;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            animation: gradientShift 5s ease infinite;
+            margin-bottom: 1.5rem;
+            text-transform: uppercase;
+        }
+
+        @keyframes gradientShift {
+            0%, 100% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+        }
+
+        .slogan {
+            font-size: clamp(1.5rem, 4vw, 3rem);
+            font-weight: 300;
+            font-style: italic;
+            margin-bottom: 3rem;
+            opacity: 0;
+            animation: fadeInUp 1s ease 0.5s forwards;
+            text-shadow: 0 2px 20px rgba(0, 0, 0, 0.5);
+        }
+
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* CTA Buttons */
+        .cta-buttons {
+            display: flex;
+            gap: 1.5rem;
+            justify-content: center;
+            flex-wrap: wrap;
+            margin-bottom: 4rem;
+        }
+
+        .btn {
+            padding: 1.2rem 3rem;
+            font-size: 1.1rem;
+            font-weight: 600;
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-decoration: none;
+            display: inline-block;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            box-shadow: 0 10px 30px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 15px 40px rgba(102, 126, 234, 0.6);
+        }
+
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            backdrop-filter: blur(10px);
+            border: 2px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.2);
+            transform: translateY(-3px);
+        }
+
+        /* Scroll Indicator */
+        .scroll-indicator {
+            position: absolute;
+            bottom: 2rem;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.5rem;
+            opacity: 0.7;
+            animation: bounce 2s infinite;
+        }
+
+        @keyframes bounce {
+            0%, 100% { transform: translateX(-50%) translateY(0); }
+            50% { transform: translateX(-50%) translateY(10px); }
+        }
+
+        .scroll-indicator svg {
+            width: 24px;
+            height: 24px;
+        }
+
+        /* Features Section */
+        .features {
+            padding: 6rem 2rem;
+            position: relative;
+        }
+
+        .section-title {
+            font-size: clamp(2.5rem, 5vw, 4rem);
+            font-weight: 700;
+            text-align: center;
+            margin-bottom: 4rem;
+            background: linear-gradient(135deg, #fff 0%, rgba(255,255,255,0.7) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 2rem;
+            margin-bottom: 6rem;
+        }
+
+        /* Glass Morphism Cards */
+        .feature-card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 1.5rem;
+            padding: 2.5rem;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .feature-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, transparent 100%);
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+
+        .feature-card:hover {
+            transform: translateY(-10px);
+            border-color: rgba(102, 126, 234, 0.5);
+            box-shadow: 0 20px 40px rgba(102, 126, 234, 0.2);
+        }
+
+        .feature-card:hover::before {
+            opacity: 1;
+        }
+
+        .feature-icon {
+            width: 60px;
+            height: 60px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 1rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 2rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .feature-title {
+            font-size: 1.5rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+        }
+
+        .feature-description {
+            color: var(--text-secondary);
+            line-height: 1.8;
+        }
+
+        /* Countdown Section */
+        .countdown-section {
+            padding: 6rem 2rem;
+            text-align: center;
+        }
+
+        .countdown-timer {
+            display: flex;
+            justify-content: center;
+            gap: 2rem;
+            flex-wrap: wrap;
+            margin-top: 3rem;
+        }
+
+        .time-unit {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 1.5rem;
+            padding: 2rem;
+            min-width: 150px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .time-unit::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: linear-gradient(45deg, transparent, rgba(102, 126, 234, 0.1), transparent);
+            animation: shine 3s infinite;
+        }
+
+        @keyframes shine {
+            0% { transform: translateX(-100%) translateY(-100%) rotate(45deg); }
+            100% { transform: translateX(100%) translateY(100%) rotate(45deg); }
+        }
+
+        .time-value {
+            font-size: 4rem;
+            font-weight: 700;
+            line-height: 1;
+            background: linear-gradient(135deg, #667eea 0%, #f5576c 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            display: block;
+        }
+
+        .time-label {
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: var(--text-secondary);
+            margin-top: 0.5rem;
+        }
+
+        /* Email Signup */
+        .signup-section {
+            padding: 6rem 2rem;
+            text-align: center;
+        }
+
+        .signup-form {
+            max-width: 600px;
+            margin: 3rem auto 0;
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .email-input {
+            flex: 1;
+            min-width: 280px;
+            padding: 1.2rem 1.5rem;
+            font-size: 1rem;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            border-radius: 50px;
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            color: white;
+            transition: all 0.3s ease;
+        }
+
+        .email-input:focus {
+            outline: none;
+            border-color: var(--accent-color);
+            box-shadow: 0 0 20px var(--accent-glow);
+        }
+
+        .email-input::placeholder {
+            color: rgba(255, 255, 255, 0.5);
+        }
+
+        .form-message {
+            width: 100%;
+            margin-top: 1rem;
+            font-size: 0.9rem;
+        }
+
+        .form-message.success {
+            color: #86efac;
+        }
+
+        .form-message.error {
+            color: #fca5a5;
+        }
+
+        /* Footer */
+        footer {
+            padding: 3rem 2rem;
+            text-align: center;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .social-links {
+            display: flex;
+            justify-content: center;
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .social-link {
+            width: 50px;
+            height: 50px;
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            text-decoration: none;
+            transition: all 0.3s ease;
+        }
+
+        .social-link:hover {
+            background: rgba(102, 126, 234, 0.2);
+            border-color: rgba(102, 126, 234, 0.5);
+            transform: translateY(-5px);
+        }
+
+        .copyright {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            .hero {
+                padding: 3rem 1rem;
+            }
+
+            .cta-buttons {
+                flex-direction: column;
+                width: 100%;
+            }
+
+            .btn {
+                width: 100%;
+            }
+
+            .feature-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .countdown-timer {
+                gap: 1rem;
+            }
+
+            .time-unit {
+                min-width: 120px;
+                padding: 1.5rem 1rem;
+            }
+
+            .time-value {
+                font-size: 3rem;
+            }
+
+            .signup-form {
+                flex-direction: column;
+            }
+
+            .email-input {
+                min-width: 100%;
+            }
+        }
+
+        /* Loading Animation */
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        body {
+            animation: fadeIn 0.5s ease;
+        }
+    </style>
+</head>
+<body>
+    <!-- Animated Background -->
+    <div class="animated-bg"></div>
+
+    <!-- Floating Particles -->
+    <div class="particles" id="particles"></div>
+
+    <!-- Hero Section -->
+    <section class="hero">
+        <div class="container">
+            <!-- Hero Image - Using a placeholder, replace with actual image -->
+            <div class="hero-image-container">
+                <img src="https://images.unsplash.com/photo-1556906781-9cba4c2bc7ec?w=1200&h=800&fit=crop" alt="Aura Smart Sneaker" class="hero-image">
+                <div class="hero-image-overlay"></div>
+            </div>
+
+            <!-- Product Name -->
+            <h1 class="product-name">AURA</h1>
+
+            <!-- Slogan -->
+            <p class="slogan">Step Into Your Aura</p>
+
+            <!-- CTA Buttons -->
+            <div class="cta-buttons">
+                <button class="btn btn-primary" onclick="scrollToSignup()">
+                    Get Early Access
+                </button>
+                <button class="btn btn-secondary" onclick="scrollToFeatures()">
+                    Learn More
+                </button>
+            </div>
+        </div>
+
+        <!-- Scroll Indicator -->
+        <div class="scroll-indicator">
+            <span style="font-size: 0.8rem; opacity: 0.7;">Scroll Down</span>
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"></path>
+            </svg>
+        </div>
+    </section>
+
+    <!-- Features Section -->
+    <section class="features" id="features">
+        <div class="container">
+            <h2 class="section-title">Why Aura?</h2>
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">🚀</div>
+                    <h3 class="feature-title">Glowing Innovation</h3>
+                    <p class="feature-description">Experience the future with our color-changing LED sole that adapts to your style and movement.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">⚡</div>
+                    <h3 class="feature-title">Smart Tracking</h3>
+                    <p class="feature-description">Advanced sensors track your runs, steps, and performance metrics in real-time.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">✨</div>
+                    <h3 class="feature-title">Futuristic Design</h3>
+                    <p class="feature-description">Cutting-edge aesthetics meet urban athletic functionality for the modern athlete.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Countdown Section -->
+    <section class="countdown-section">
+        <div class="container">
+            <h2 class="section-title">Launching In</h2>
+            <div class="countdown-timer">
+                <div class="time-unit">
+                    <span class="time-value" id="days">00</span>
+                    <span class="time-label">Days</span>
+                </div>
+                <div class="time-unit">
+                    <span class="time-value" id="hours">00</span>
+                    <span class="time-label">Hours</span>
+                </div>
+                <div class="time-unit">
+                    <span class="time-value" id="minutes">00</span>
+                    <span class="time-label">Minutes</span>
+                </div>
+                <div class="time-unit">
+                    <span class="time-value" id="seconds">00</span>
+                    <span class="time-label">Seconds</span>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Email Signup Section -->
+    <section class="signup-section" id="signup">
+        <div class="container">
+            <h2 class="section-title">Be the First to Know</h2>
+            <p style="color: var(--text-secondary); margin-bottom: 2rem; font-size: 1.1rem;">
+                Join the waitlist and get exclusive early access
+            </p>
+            <form class="signup-form" id="email-form">
+                <input
+                    type="email"
+                    class="email-input"
+                    id="email"
+                    placeholder="Enter your email address"
+                    required
+                >
+                <button type="submit" class="btn btn-primary">
+                    Notify Me
+                </button>
+            </form>
+            <p class="form-message" id="form-message"></p>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer>
+        <div class="container">
+            <div class="social-links">
+                <a href="#" class="social-link" aria-label="Twitter">𝕏</a>
+                <a href="#" class="social-link" aria-label="Instagram">📷</a>
+                <a href="#" class="social-link" aria-label="LinkedIn">in</a>
+                <a href="#" class="social-link" aria-label="Facebook">f</a>
+            </div>
+            <p class="copyright">
+                &copy; 2024 Aura. All rights reserved.
+            </p>
+        </div>
+    </footer>
+
+    <script>
+        // Particle Generation
+        function createParticles() {
+            const particlesContainer = document.getElementById('particles');
+            const particleCount = 50;
+
+            for (let i = 0; i < particleCount; i++) {
+                const particle = document.createElement('div');
+                particle.className = 'particle';
+                particle.style.width = Math.random() * 5 + 2 + 'px';
+                particle.style.height = particle.style.width;
+                particle.style.left = Math.random() * 100 + '%';
+                particle.style.top = Math.random() * 100 + '%';
+                particle.style.animationDelay = Math.random() * 15 + 's';
+                particle.style.animationDuration = Math.random() * 10 + 10 + 's';
+                particlesContainer.appendChild(particle);
+            }
+        }
+
+        // Countdown Timer
+        const launchDate = new Date();
+        launchDate.setDate(launchDate.getDate() + 30); // 30 days from now
+
+        function updateCountdown() {
+            const now = new Date().getTime();
+            const distance = launchDate - now;
+
+            const days = Math.floor(distance / (1000 * 60 * 60 * 24));
+            const hours = Math.floor((distance % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+            const minutes = Math.floor((distance % (1000 * 60 * 60)) / (1000 * 60));
+            const seconds = Math.floor((distance % (1000 * 60)) / 1000);
+
+            document.getElementById('days').textContent = String(days).padStart(2, '0');
+            document.getElementById('hours').textContent = String(hours).padStart(2, '0');
+            document.getElementById('minutes').textContent = String(minutes).padStart(2, '0');
+            document.getElementById('seconds').textContent = String(seconds).padStart(2, '0');
+
+            if (distance < 0) {
+                clearInterval(countdownInterval);
+                document.querySelector('.countdown-section').innerHTML = '<h2 class="section-title">We are Live! 🎉</h2>';
+            }
+        }
+
+        const countdownInterval = setInterval(updateCountdown, 1000);
+        updateCountdown();
+
+        // Email Form Handling
+        document.getElementById('email-form').addEventListener('submit', function(e) {
+            e.preventDefault();
+            const email = document.getElementById('email').value;
+            const message = document.getElementById('form-message');
+
+            if (email && email.includes('@')) {
+                message.textContent = '🎉 Success! We\'ll notify you at launch.';
+                message.className = 'form-message success';
+                document.getElementById('email').value = '';
+
+                // Add confetti animation
+                createConfetti();
+
+                // In production: send to backend
+                console.log('Email submitted:', email);
+            } else {
+                message.textContent = '❌ Please enter a valid email address.';
+                message.className = 'form-message error';
+            }
+        });
+
+        // Confetti Effect
+        function createConfetti() {
+            const colors = ['#667eea', '#764ba2', '#f5576c', '#4facfe'];
+            const confettiCount = 50;
+
+            for (let i = 0; i < confettiCount; i++) {
+                const confetti = document.createElement('div');
+                confetti.style.position = 'fixed';
+                confetti.style.width = '10px';
+                confetti.style.height = '10px';
+                confetti.style.backgroundColor = colors[Math.floor(Math.random() * colors.length)];
+                confetti.style.left = Math.random() * 100 + '%';
+                confetti.style.top = '-10px';
+                confetti.style.opacity = '1';
+                confetti.style.pointerEvents = 'none';
+                confetti.style.zIndex = '9999';
+                document.body.appendChild(confetti);
+
+                const duration = Math.random() * 3 + 2;
+                confetti.animate([
+                    { transform: 'translateY(0) rotate(0deg)', opacity: 1 },
+                    { transform: `translateY(${window.innerHeight + 10}px) rotate(${Math.random() * 360}deg)`, opacity: 0 }
+                ], {
+                    duration: duration * 1000,
+                    easing: 'cubic-bezier(0.25, 0.46, 0.45, 0.94)'
+                });
+
+                setTimeout(() => confetti.remove(), duration * 1000);
+            }
+        }
+
+        // Smooth Scroll Functions
+        function scrollToSignup() {
+            document.getElementById('signup').scrollIntoView({ behavior: 'smooth' });
+        }
+
+        function scrollToFeatures() {
+            document.getElementById('features').scrollIntoView({ behavior: 'smooth' });
+        }
+
+        // Intersection Observer for Scroll Animations
+        const observerOptions = {
+            threshold: 0.1,
+            rootMargin: '0px 0px -100px 0px'
+        };
+
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    entry.target.style.opacity = '1';
+                    entry.target.style.transform = 'translateY(0)';
+                }
+            });
+        }, observerOptions);
+
+        // Apply animations to feature cards
+        document.querySelectorAll('.feature-card').forEach((card, index) => {
+            card.style.opacity = '0';
+            card.style.transform = 'translateY(50px)';
+            card.style.transition = `all 0.6s ease ${index * 0.2}s`;
+            observer.observe(card);
+        });
+
+        // Initialize
+        createParticles();
+
+        // Parallax Effect on Scroll
+        window.addEventListener('scroll', () => {
+            const scrolled = window.pageYOffset;
+            const parallaxElements = document.querySelectorAll('.hero-image-container');
+            parallaxElements.forEach(el => {
+                el.style.transform = `translateY(${scrolled * 0.5}px)`;
+            });
+        });
+    </script>
+</body>
+</html>
