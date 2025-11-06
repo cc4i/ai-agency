@@ -104,6 +104,26 @@ async def health_check():
     }
 
 
+@app.get("/api/config/models-voices")
+async def get_models_and_voices():
+    """
+    Get available Gemini Live models and voices.
+
+    Returns configuration options for the frontend selection UI.
+    Voices are organized by personality groups for easier selection.
+    """
+    from app.voice_config import AVAILABLE_MODELS, VOICE_GROUPS, DEFAULT_MODEL, DEFAULT_VOICE
+
+    return {
+        "models": AVAILABLE_MODELS,
+        "voiceGroups": VOICE_GROUPS,
+        "defaults": {
+            "model": DEFAULT_MODEL,
+            "voice": DEFAULT_VOICE
+        }
+    }
+
+
 @app.websocket("/ws/{session_id}/{project_id}")
 async def gemini_live_websocket(websocket: WebSocket, session_id: str, project_id: str):
     """
@@ -151,7 +171,13 @@ async def gemini_live_websocket(websocket: WebSocket, session_id: str, project_i
 
 
 @app.websocket("/ws/adk/{session_id}/{project_id}")
-async def gemini_live_adk_websocket(websocket: WebSocket, session_id: str, project_id: str):
+async def gemini_live_adk_websocket(
+    websocket: WebSocket,
+    session_id: str,
+    project_id: str,
+    model: str = None,  # Query parameter for model selection
+    voice: str = None,  # Query parameter for voice selection
+):
     """
     WebSocket endpoint for Gemini Live streaming conversation (ADK Implementation).
 
@@ -168,16 +194,46 @@ async def gemini_live_adk_websocket(websocket: WebSocket, session_id: str, proje
         websocket: FastAPI WebSocket connection
         session_id: Unique session identifier
         project_id: Project identifier
+        model: Gemini Live model ID (query param, optional - defaults to stable)
+        voice: Voice name for TTS (query param, optional - defaults to Kore)
     """
     from app.services.gemini_live_adk import GeminiLiveADKConnection
+    from app.voice_config import (
+        is_valid_model,
+        is_valid_voice,
+        DEFAULT_MODEL,
+        DEFAULT_VOICE,
+        get_all_models,
+        get_all_voices
+    )
 
-    logger.info(f"[ADK] WebSocket connection request for session: {session_id}, project: {project_id}")
+    # Use defaults if not provided
+    model = model or DEFAULT_MODEL
+    voice = voice or DEFAULT_VOICE
 
-    # Create ADK-based Gemini Live connection
+    logger.info(
+        f"[ADK] WebSocket connection request: session={session_id}, "
+        f"project={project_id}, model={model}, voice={voice}"
+    )
+
+    # Validate model
+    if not is_valid_model(model):
+        logger.error(f"[ADK] Invalid model: {model}. Valid options: {get_all_models()}")
+        await websocket.close(code=1008, reason=f"Invalid model: {model}")
+        return
+
+    # Validate voice
+    if not is_valid_voice(voice):
+        logger.error(f"[ADK] Invalid voice: {voice}. Valid options: {get_all_voices()}")
+        await websocket.close(code=1008, reason=f"Invalid voice: {voice}")
+        return
+
+    # Create ADK-based Gemini Live connection with user-selected settings
     gemini_connection = GeminiLiveADKConnection(
         session_id=session_id,
         project_id=project_id,
-        voice_name="Kore"  # Female voice
+        model_name=model,  # User-selected model
+        voice_name=voice,  # User-selected voice
     )
 
     try:

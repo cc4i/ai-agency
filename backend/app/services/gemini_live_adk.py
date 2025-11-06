@@ -1095,6 +1095,14 @@ When you call functions, they will automatically use this project context.
 """
 
 
+# ============================================================================
+# DEPRECATED: Global agent and runner (kept for backwards compatibility)
+# ============================================================================
+# NOTE: These globals are no longer used. Each GeminiLiveADKConnection now
+# creates its own agent and runner with user-selected model and voice.
+# The per-connection architecture allows multiple users with different
+# settings to connect simultaneously without conflicts.
+
 # Create the Executive Producer agent with all tools
 agent_kwargs = {
     "name": "executive_producer",
@@ -1178,10 +1186,12 @@ class GeminiLiveADKConnection:
         self,
         session_id: str,
         project_id: str = "aura_smart_sneaker",
+        model_name: str = "gemini-live-2.5-flash",
         voice_name: str = "Kore",
     ):
         self.session_id = session_id
         self.project_id = project_id
+        self.model_name = model_name
         self.voice_name = voice_name
         self.frontend_ws: Optional[WebSocket] = None
         self.live_request_queue = None
@@ -1194,7 +1204,58 @@ class GeminiLiveADKConnection:
             tool._project_id = project_id
             tool._frontend_ws = None  # Will be set after WebSocket connect
 
-        logger.info(f"✓ ADK connection initialized: session={session_id}, project={project_id}")
+        # Create agent with user-selected model (per-connection instance)
+        agent_kwargs = {
+            "name": "executive_producer",
+            "model": self.model_name,  # Use instance model (user-selected)
+            "description": "Executive Producer for AI Agency Hub - coordinates creative campaign development",
+            "instruction": "",  # Will be set dynamically per session
+            "tools": [
+                # Campaign management tools
+                update_project_brief,
+                create_campaign_strategy,
+                generate_hero_images,
+                generate_social_video,
+                generate_audio_assets,
+                generate_landing_page,
+                # Memory Bank tools (enabled via feature flag)
+                PreloadMemoryTool() if settings.enable_memory_bank else None,
+                load_memory if settings.enable_memory_bank else None,
+            ],
+        }
+
+        self.agent = Agent(**agent_kwargs)
+
+        # Remove None values from tools list (when Memory Bank is disabled)
+        self.agent.tools = [t for t in self.agent.tools if t is not None]
+
+        # Fix ADK app name mismatch warning
+        self.agent._file = "app/services/gemini_live_adk.py"
+
+        # Create per-connection session service and runner
+        self.session_service = InMemorySessionService()
+
+        # Configure runner with Memory Bank support
+        runner_kwargs = {
+            "app_name": "ai_agency_hub",
+            "agent": self.agent,
+            "session_service": self.session_service,
+        }
+
+        # Add Memory Bank service if enabled
+        if settings.enable_memory_bank:
+            # Initialize memory service before passing to runner
+            memory_service._initialize()
+            if memory_service._service:
+                # Pass the underlying VertexAiMemoryBankService to runner
+                runner_kwargs["memory_service"] = memory_service._service
+                logger.info("✓ Memory Bank service registered with runner")
+            else:
+                logger.warning("⚠ Memory Bank service failed to initialize, running without memory")
+
+        self.runner = Runner(**runner_kwargs)
+
+        logger.info(f"✓ ADK connection initialized: session={session_id}, project={project_id}, model={model_name}, voice={voice_name}")
 
     async def connect(self, frontend_ws: WebSocket):
         """
@@ -1271,14 +1332,14 @@ class GeminiLiveADKConnection:
     async def _initialize_adk_session(self):
         """Initialize ADK session with Gemini Live."""
         # Get or create session
-        session = await runner.session_service.get_session(
+        session = await self.runner.session_service.get_session(
             app_name="ai_agency_hub",
             user_id=self.session_id,
             session_id=self.session_id,
         )
 
         if not session:
-            session = await runner.session_service.create_session(
+            session = await self.runner.session_service.create_session(
                 app_name="ai_agency_hub",
                 user_id=self.session_id,
                 session_id=self.session_id,
@@ -1291,7 +1352,7 @@ class GeminiLiveADKConnection:
         self.session = session
 
         # Update agent instruction with project-specific system prompt
-        executive_producer_agent.instruction = create_system_prompt(self.project_id)
+        self.agent.instruction = create_system_prompt(self.project_id)
 
         # Create live request queue
         self.live_request_queue = LiveRequestQueue()
@@ -1322,7 +1383,7 @@ class GeminiLiveADKConnection:
         )
 
         # Start live streaming session
-        self.live_events = runner.run_live(
+        self.live_events = self.runner.run_live(
             user_id=self.session_id,
             session_id=self.session_id,
             live_request_queue=self.live_request_queue,
@@ -1449,8 +1510,15 @@ class GeminiLiveADKConnection:
                                 pass
 
             except Exception as e:
-                logger.error(f"Client→Agent error after {message_count} messages: {e}", exc_info=True)
-                logger.error(f"Last message type: {message.get('type') if 'message' in locals() else 'N/A'}")
+                # Check if this is a normal disconnect (code 1005 = NO_STATUS_RCVD means client closed connection normally)
+                from starlette.websockets import WebSocketDisconnect
+                if isinstance(e, WebSocketDisconnect) and e.code in (1000, 1005):
+                    # Normal closure - user clicked Settings or navigated away
+                    logger.info(f"[ADK] Client disconnected normally after {message_count} messages (code: {e.code})")
+                else:
+                    # Unexpected error
+                    logger.error(f"Client→Agent error after {message_count} messages: {e}", exc_info=True)
+                    logger.error(f"Last message type: {message.get('type') if 'message' in locals() else 'N/A'}")
                 break
 
     async def _agent_to_client_messaging(self):
@@ -1549,7 +1617,7 @@ class GeminiLiveADKConnection:
 
                             # Get the actual session from ADK's session_service
                             # This contains all events from the ADK conversation flow
-                            latest_session = await session_service.get_session(
+                            latest_session = await self.session_service.get_session(
                                 app_name="ai_agency_hub",
                                 user_id=self.session_id,
                                 session_id=self.session_id,
@@ -1616,8 +1684,13 @@ class GeminiLiveADKConnection:
                     }))
 
             except Exception as e:
-                logger.error(f"Agent→Client error at event #{event_count}: {e}", exc_info=True)
-                logger.error(f"Event type: {type(event).__name__ if 'event' in locals() else 'N/A'}")
+                # Check if this is a normal disconnect (sending to closed WebSocket)
+                from starlette.websockets import WebSocketDisconnect
+                if isinstance(e, (WebSocketDisconnect, ConnectionError, BrokenPipeError)):
+                    logger.info(f"[ADK] Client connection closed while sending event #{event_count}")
+                else:
+                    logger.error(f"Agent→Client error at event #{event_count}: {e}", exc_info=True)
+                    logger.error(f"Event type: {type(event).__name__ if 'event' in locals() else 'N/A'}")
                 break
 
     async def _save_transcript(self, role: str, text: str):

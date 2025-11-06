@@ -19,13 +19,19 @@ import { MicrophoneInterface } from './MicrophoneInterface';
 import { AgentStatusBar } from './AgentStatusBar';
 import { AssetDisplay } from './AssetDisplay';
 import { ProducerAnnouncements } from './ProducerAnnouncements';
-import { TranscriptDisplay } from './TranscriptDisplay'; // Import the new component
+import { TranscriptDisplay } from './TranscriptDisplay';
+import { ConfigurationScreen } from './ConfigurationScreen';
 import { useProjectStore } from '@/stores/useProjectStore';
 
 export default function WorkspaceClient() {
   const [sessionId, setSessionId] = useState<string>('');
   const [projectId, setProjectId] = useState<string>('');
   const [isInitialized, setIsInitialized] = useState(false);
+
+  // Configuration state
+  const [configComplete, setConfigComplete] = useState(false);
+  const [selectedModel, setSelectedModel] = useState<string>('');
+  const [selectedVoice, setSelectedVoice] = useState<string>('');
 
   const { reset } = useProjectStore();
 
@@ -52,11 +58,23 @@ export default function WorkspaceClient() {
     reset();
   }, [reset]);
 
-  // IMPORTANT: Call hooks unconditionally (Rules of Hooks)
-  // Even if IDs aren't ready yet - the hooks will handle it
-  const { sendAudio, sendMessage, sendTurnComplete, isConnected } = useWebSocket(sessionId, projectId);
+  // Handler for configuration completion
+  const handleConfigComplete = (model: string, voice: string) => {
+    setSelectedModel(model);
+    setSelectedVoice(voice);
+    setConfigComplete(true);
+  };
 
-  // Microphone
+  // IMPORTANT: Call hooks unconditionally (Rules of Hooks)
+  // Must be called before any conditional returns to ensure cleanup runs properly
+  const { sendAudio, sendMessage, sendTurnComplete, isConnected } = useWebSocket(
+    sessionId,
+    projectId,
+    selectedModel,
+    selectedVoice
+  );
+
+  // Microphone - also must be called unconditionally
   const { isRecording, toggleRecording } = useMicrophone({
     onAudioData: sendAudio,
     onTurnComplete: undefined, // Not used - Gemini handles turn detection
@@ -64,6 +82,11 @@ export default function WorkspaceClient() {
     sampleRate: 16000, // Gemini Live API requires 16kHz input (outputs 24kHz)
     vadEnabled: false, // Disable frontend VAD - let Gemini's VAD handle it
   });
+
+  // Show configuration screen first (AFTER hooks are called)
+  if (!configComplete) {
+    return <ConfigurationScreen onStart={handleConfigComplete} />;
+  }
 
   // Render loading state AFTER hooks (Rules of Hooks - hooks must be called unconditionally)
   if (!isInitialized || !sessionId || !projectId) {
@@ -74,10 +97,30 @@ export default function WorkspaceClient() {
     );
   }
 
+  // Handler for reconfiguration - go back to config screen
+  const handleReconfigure = () => {
+    // Reset configuration state to show config screen again
+    setConfigComplete(false);
+
+    // Clear model and voice to trigger WebSocket disconnect
+    // This is important because useWebSocket won't connect without valid model/voice
+    setSelectedModel('');
+    setSelectedVoice('');
+
+    // Reset project store
+    reset();
+
+    // WebSocket will disconnect automatically via useEffect cleanup when dependencies change
+  };
+
   return (
     <div className="h-screen bg-black text-white flex flex-col overflow-hidden">
       {/* Agent Status Bar */}
-      <AgentStatusBar />
+      <AgentStatusBar
+        onReconfigure={handleReconfigure}
+        selectedModel={selectedModel}
+        selectedVoice={selectedVoice}
+      />
 
       {/* Main Content Area */}
       <div className="relative flex flex-1 overflow-hidden min-h-0">

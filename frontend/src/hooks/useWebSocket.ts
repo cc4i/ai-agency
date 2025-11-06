@@ -33,7 +33,12 @@ interface WebSocketMessage {
   brief?: any;
 }
 
-export function useWebSocket(sessionId: string, projectId: string) {
+export function useWebSocket(
+  sessionId: string,
+  projectId: string,
+  model: string,
+  voice: string
+) {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -49,7 +54,7 @@ export function useWebSocket(sessionId: string, projectId: string) {
   // Audio processing toggle - set to false to bypass filter/compressor for testing
   const enableAudioProcessing = useRef<boolean>(false); // Toggle this to test raw audio
 
-  const sessionPrefix = `[Session: ${sessionId.slice(0, 8)}...][Project: ${projectId}]`;
+  const sessionPrefix = `[Session: ${sessionId.slice(0, 8)}...][Project: ${projectId}][Model: ${model}][Voice: ${voice}]`;
 
   const {
     setBrief,
@@ -435,8 +440,8 @@ export function useWebSocket(sessionId: string, projectId: string) {
 
   const connect = useCallback(() => {
     // Don't connect if IDs are empty
-    if (!sessionId || !projectId) {
-      console.warn(`${sessionPrefix} [WebSocket] ⚠ Cannot connect: missing session or project ID`);
+    if (!sessionId || !projectId || !model || !voice) {
+      console.warn(`${sessionPrefix} [WebSocket] ⚠ Cannot connect: missing session, project ID, model, or voice`);
       return;
     }
 
@@ -452,8 +457,10 @@ export function useWebSocket(sessionId: string, projectId: string) {
       wsRef.current = null;
     }
 
-    console.log(`${sessionPrefix} [WebSocket] 🔌 Connecting to ${WS_URL}/ws/adk/${sessionId}/${projectId} (ADK)`);
-    const ws = new WebSocket(`${WS_URL}/ws/adk/${sessionId}/${projectId}`);
+    // Include model and voice as query parameters
+    const wsUrl = `${WS_URL}/ws/adk/${sessionId}/${projectId}?model=${encodeURIComponent(model)}&voice=${encodeURIComponent(voice)}`;
+    console.log(`${sessionPrefix} [WebSocket] 🔌 Connecting to ${wsUrl} (ADK)`);
+    const ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {
       console.log(`${sessionPrefix} [WebSocket] ✓ Connected to backend`);
@@ -479,7 +486,7 @@ export function useWebSocket(sessionId: string, projectId: string) {
     };
 
     wsRef.current = ws;
-  }, [sessionId, projectId, handleMessage, setConnected, sessionPrefix]);
+  }, [sessionId, projectId, model, voice, handleMessage, setConnected, sessionPrefix]);
 
   const disconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) {
@@ -549,8 +556,8 @@ export function useWebSocket(sessionId: string, projectId: string) {
   }, [sessionPrefix]);
 
   useEffect(() => {
-    // Only connect if we have valid IDs
-    if (sessionId && projectId) {
+    // Only connect if we have valid IDs, model, and voice
+    if (sessionId && projectId && model && voice) {
       console.log(`${sessionPrefix} [WebSocket] useEffect triggered, connecting...`);
       connect();
     }
@@ -560,7 +567,7 @@ export function useWebSocket(sessionId: string, projectId: string) {
       disconnect();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, projectId]); // Only depend on IDs, not connect/disconnect functions
+  }, [sessionId, projectId, model, voice]); // Only depend on IDs and config, not connect/disconnect functions
 
   return {
     sendAudio,

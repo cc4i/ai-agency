@@ -11,7 +11,7 @@
 
 import { useProjectStore } from '@/stores/useProjectStore';
 import { cn } from '@/lib/utils';
-import { Loader2, CheckCircle2, XCircle, Circle, Sparkles } from 'lucide-react';
+import { Loader2, CheckCircle2, XCircle, Circle, Sparkles, Settings } from 'lucide-react';
 
 const AGENTS = [
   { id: 'strategy', name: 'Strategy', icon: '🎯' },
@@ -21,7 +21,13 @@ const AGENTS = [
   { id: 'web_dev', name: 'Web Dev', icon: '💻' },
 ];
 
-export function AgentStatusBar() {
+interface AgentStatusBarProps {
+  onReconfigure?: () => void;
+  selectedModel?: string;
+  selectedVoice?: string;
+}
+
+export function AgentStatusBar({ onReconfigure, selectedModel, selectedVoice }: AgentStatusBarProps) {
   const { agentStatuses } = useProjectStore();
 
   return (
@@ -40,8 +46,26 @@ export function AgentStatusBar() {
               </p>
             </div>
           </div>
-          <div className="text-xs text-zinc-500">
-            Powered by Gemini Live
+          <div className="flex items-center gap-2">
+            <div className="flex flex-col items-end">
+              <div className="text-xs text-zinc-400 font-mono">
+                {selectedModel || 'gemini-live-2.5-flash'}
+              </div>
+              {selectedVoice && (
+                <div className="text-xs text-zinc-500">
+                  Voice: {selectedVoice}
+                </div>
+              )}
+            </div>
+            {onReconfigure && (
+              <button
+                onClick={onReconfigure}
+                className="p-1.5 rounded-lg hover:bg-zinc-800 transition-colors group"
+                title="Change model and voice settings"
+              >
+                <Settings className="w-4 h-4 text-zinc-500 group-hover:text-zinc-300 transition-colors" />
+              </button>
+            )}
           </div>
         </div>
 
