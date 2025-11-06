@@ -42,6 +42,10 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Enable DEBUG logging for ADK Memory Bank to catch silent skips
+adk_memory_logger = logging.getLogger('google.adk.memory.vertex_ai_memory_bank_service')
+adk_memory_logger.setLevel(logging.DEBUG)
+
 
 class MemoryBankService:
     """
@@ -177,11 +181,17 @@ class MemoryBankService:
                         )
 
                 if event_count == 0:
-                    logger.error("[Memory Bank] ⚠️ Session has ZERO events - nothing to persist!")
+                    logger.debug(
+                        "[Memory Bank] Session has no events yet - skipping persistence. "
+                        "This is normal if called before events are committed to the session."
+                    )
                     return False
 
                 if events_with_content == 0:
-                    logger.error("[Memory Bank] ⚠️ Session has events but ZERO have content - nothing to persist!")
+                    logger.warning(
+                        "[Memory Bank] Session has events but none have content - skipping persistence. "
+                        "This may indicate an issue with event content population."
+                    )
                     return False
             else:
                 logger.error("[Memory Bank] ⚠️ Session has no 'events' attribute!")
@@ -190,6 +200,83 @@ class MemoryBankService:
             # Add session to Memory Bank
             # The service will automatically extract and index the conversation
             logger.info(f"[Memory Bank] Calling VertexAiMemoryBankService.add_session_to_memory()...")
+
+            # DIAGNOSTIC: Check what will be sent to Memory Bank
+            # The ADK service filters out events with no content/parts
+            filterable_events = 0
+            valid_events = 0
+            valid_event_indices = []
+
+            for i, event in enumerate(session.events):  # Check ALL events
+                has_content = hasattr(event, 'content') and event.content is not None
+                if has_content:
+                    has_parts = hasattr(event.content, 'parts') and event.content.parts
+                    if has_parts:
+                        # Check if any part has actual data (text, inline_data, file_data)
+                        # Note: function_call parts are intentionally filtered out by ADK
+                        has_valid_data = any(
+                            hasattr(part, 'text') and part.text or
+                            hasattr(part, 'inline_data') and part.inline_data or
+                            hasattr(part, 'file_data') and part.file_data
+                            for part in event.content.parts
+                        )
+                        if has_valid_data:
+                            valid_events += 1
+                            valid_event_indices.append(i)
+                            # Only log first few valid events to avoid spam
+                            if valid_events <= 3:
+                                logger.info(
+                                    f"[Memory Bank] Event {i}: ✅ VALID - has text/inline_data/file_data"
+                                )
+                        else:
+                            filterable_events += 1
+                            # Diagnose why it's filtered (first few only)
+                            if filterable_events <= 3:
+                                # Check what type of part it actually has
+                                part_types = []
+                                for part in event.content.parts:
+                                    if hasattr(part, 'function_call') and part.function_call:
+                                        part_types.append('function_call')
+                                    elif hasattr(part, 'function_response') and part.function_response:
+                                        part_types.append('function_response')
+                                    else:
+                                        part_types.append('unknown')
+
+                                logger.info(
+                                    f"[Memory Bank] Event {i}: ❌ FILTERED - "
+                                    f"has parts but only: {', '.join(part_types)} "
+                                    f"(Memory Bank only persists text/inline_data/file_data)"
+                                )
+                    else:
+                        filterable_events += 1
+                        if filterable_events <= 3:
+                            logger.debug(
+                                f"[Memory Bank] Event {i}: ❌ FILTERED - content has no parts"
+                            )
+                else:
+                    filterable_events += 1
+
+            logger.info(
+                f"[Memory Bank] Event validation complete: {valid_events} valid, "
+                f"{filterable_events} will be filtered out (total {event_count})"
+            )
+
+            if valid_events > 0:
+                logger.info(
+                    f"[Memory Bank] Valid event indices: {valid_event_indices[:10]}"
+                    f"{'...' if len(valid_event_indices) > 10 else ''}"
+                )
+
+            if valid_events == 0:
+                logger.warning(
+                    f"[Memory Bank] ⚠️  No persistable events found "
+                    f"({event_count} total, {filterable_events} filtered). "
+                    f"Memory Bank only persists conversational content "
+                    f"(text/audio/images), not function calls. "
+                    f"This is normal if the conversation only contains tool execution."
+                )
+                return False
+
             await self._service.add_session_to_memory(session=session)
             logger.info(f"[Memory Bank] ✓ ADK call completed without error")
 
@@ -249,21 +336,20 @@ class MemoryBankService:
                 app_name=app_name,
                 user_id=user_id,
                 query=query,
-                limit=limit,
             )
 
-            logger.info(f"[Memory Bank] ✓ Found {len(results)} relevant memories")
+            logger.info(f"[Memory Bank] ✓ Found {len(results.memories)} relevant memories")
 
             # Log first result for debugging
-            if results:
-                first_result = results[0]
+            if results.memories:
+                first_result = results.memories[0]
                 logger.debug(
                     f"[Memory Bank] Top result: "
                     f"relevance={first_result.get('relevance_score', 0):.2f}, "
                     f"content='{str(first_result.get('content', ''))[:100]}...'"
                 )
 
-            return results
+            return results.memories
 
         except Exception as e:
             logger.error(f"[Memory Bank] ✗ Search failed: {e}", exc_info=True)

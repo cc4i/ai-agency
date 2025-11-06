@@ -1,6 +1,6 @@
 """Gemini Live ADK Connection - Simplified bidirectional audio streaming.
 
-This is a proof-of-concept implementation using Google ADK (Agent Development Kit)
+This is a production implementation using Google ADK (Agent Development Kit)
 to replace the complex manual WebSocket handling in gemini_live.py.
 
 Key simplifications:
@@ -11,10 +11,22 @@ Key simplifications:
 - ~250 lines vs 2219 lines in the manual implementation
 
 Architecture:
-┌──────────┐         ┌──────────┐         ┌──────────────┐
-│ Frontend │◄───────►│ FastAPI  │◄───────►│  ADK Runner  │
-│  (Next)  │ WebSocket│ Backend  │   ADK   │ (Gemini Live)│
-└──────────┘         └──────────┘         └──────────────┘
+┌──────────┐         ┌──────────┐         ┌──────────────┐         ┌─────────────┐
+│ Frontend │◄───────►│ FastAPI  │◄───────►│  ADK Runner  │◄───────►│ Memory Bank │
+│  (Next)  │ WebSocket│ Backend  │   ADK   │ (Gemini Live)│   Auto  │ (Vertex AI) │
+└──────────┘         └──────────┘         └──────────────┘  Persist └─────────────┘
+
+Session Management (Single Source of Truth):
+- Active sessions: ADK InMemorySessionService (ephemeral)
+- Persistence: Vertex AI Memory Bank (automatic on turn_complete)
+- Retrieval: load_memory tool for semantic search
+- No Redis conversation history (deprecated)
+- No ConversationManager in ADK flow (only used in demo_flow.py)
+
+Configuration:
+- ENABLE_MEMORY_BANK=true: Enables automatic persistence to Memory Bank
+- MEMORY_CALLBACK_ENABLED=true: Enables turn_complete persistence trigger
+- See .env for full configuration
 """
 
 import asyncio
@@ -22,7 +34,6 @@ import base64
 import json
 import logging
 import os
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import WebSocket
@@ -41,7 +52,6 @@ from google import genai
 from google.genai import types
 
 from app.config import settings
-from app.models.brief import ConversationMessage
 from app.services.redis_client import redis_client
 
 # Configure environment for Vertex AI
@@ -1050,7 +1060,7 @@ When you call functions, they will automatically use this project context.
 # Create the Executive Producer agent with all tools
 agent_kwargs = {
     "name": "executive_producer",
-    "model": "gemini-live-2.5-flash-preview-native-audio-09-2025",  # Vertex AI native audio model
+    "model": "gemini-live-2.5-flash", #"gemini-live-2.5-flash-preview-native-audio-09-2025",  # Vertex AI native audio model
     "description": "Executive Producer for AI Agency Hub - coordinates creative campaign development",
     "instruction": "",  # Will be set dynamically per session
     "tools": [
@@ -1075,6 +1085,10 @@ executive_producer_agent = Agent(**agent_kwargs)
 
 # Remove None values from tools list (when Memory Bank is disabled)
 executive_producer_agent.tools = [t for t in executive_producer_agent.tools if t is not None]
+
+# Fix ADK app name mismatch warning by explicitly setting the agent file path
+# This overrides the automatic detection that infers app name from package path
+executive_producer_agent._file = "app/services/gemini_live_adk.py"
 
 # Create session service and runner (reuse across connections)
 session_service = InMemorySessionService()
@@ -1114,6 +1128,12 @@ class GeminiLiveADKConnection:
     Simplified Gemini Live connection using ADK.
 
     Replaces 2219 lines of manual WebSocket handling with ~250 lines using ADK abstractions.
+
+    Session Management:
+    - Conversation history is automatically persisted to Vertex AI Memory Bank
+    - ADK InMemorySessionService handles active session state
+    - Memory Bank provides semantic search across all conversations
+    - See ENABLE_MEMORY_BANK setting in .env to configure
     """
 
     def __init__(
@@ -1402,13 +1422,48 @@ class GeminiLiveADKConnection:
             event_count += 1
             try:
                 logger.debug(f"[ADK] Processing event #{event_count}: {type(event).__name__}")
-                # Handle audio transcription (text representation of audio response)
+                # Handle input transcription (user speech → text)
+                if event.input_transcription and event.input_transcription.text:
+                    user_text = event.input_transcription.text
+
+                    # ADD USER TEXT EVENT TO SESSION FOR MEMORY BANK
+                    # This captures what the user said as text for conversation memory
+                    # Must use session_service.append_event() to properly persist
+                    if hasattr(self, 'session') and self.session:
+                        from google.adk.events import Event
+                        user_event = Event(
+                            author="user",
+                            content=types.Content(
+                                role="user",
+                                parts=[types.Part.from_text(text=user_text)]
+                            )
+                        )
+                        await session_service.append_event(self.session, user_event)
+                        logger.debug(f"[Memory Bank] Added user text event: {user_text[:50]}...")
+
+                # Handle output transcription (assistant speech → text)
                 # Frontend expects "text_output" type with "text" and "role" fields
                 if event.output_transcription and event.output_transcription.text:
                     transcript_text = event.output_transcription.text
 
-                    # Save to Redis
+                    # Log for debugging
                     await self._save_transcript("assistant", transcript_text)
+
+                    # ADD ASSISTANT TEXT EVENT TO SESSION FOR MEMORY BANK
+                    # The ADK session events only contain function calls by default
+                    # We need to manually add text content for conversation memory
+                    # Must use session_service.append_event() to properly persist
+                    if hasattr(self, 'session') and self.session:
+                        from google.adk.events import Event
+                        assistant_event = Event(
+                            author="model",
+                            content=types.Content(
+                                role="model",
+                                parts=[types.Part.from_text(text=transcript_text)]
+                            )
+                        )
+                        await session_service.append_event(self.session, assistant_event)
+                        logger.debug(f"[Memory Bank] Added assistant text event: {transcript_text[:50]}...")
 
                     # Send to frontend (matching expected format)
                     await self.frontend_ws.send_text(json.dumps({
@@ -1438,7 +1493,11 @@ class GeminiLiveADKConnection:
                         "type": "turn_complete",
                     }))
 
-                    # Persist conversation to Memory Bank after turn completes
+                    # ================================================================
+                    # MEMORY BANK PERSISTENCE (Single Source of Truth)
+                    # ================================================================
+                    # Persist conversation to Vertex AI Memory Bank after turn completes
+                    # This is the ONLY persistence mechanism - Redis conversation history is deprecated
                     # NOTE: after_agent_callback doesn't trigger in run_live() mode,
                     # so we manually persist here when turn_complete is detected
                     if settings.enable_memory_bank and settings.memory_callback_enabled:
@@ -1446,13 +1505,13 @@ class GeminiLiveADKConnection:
                             from app.services.memory_service import memory_service
 
                             logger.info(
-                                f"[Memory Bank] Turn complete detected, persisting session: "
+                                f"[Memory Bank] 🔄 Turn complete detected, persisting session: "
                                 f"session_id={self.session_id}"
                             )
 
-                            # IMPORTANT: Fetch the latest session state from session_service
-                            # The session object may have been updated by the runner with new events
-                            latest_session = await runner.session_service.get_session(
+                            # Get the actual session from ADK's session_service
+                            # This contains all events from the ADK conversation flow
+                            latest_session = await session_service.get_session(
                                 app_name="ai_agency_hub",
                                 user_id=self.session_id,
                                 session_id=self.session_id,
@@ -1461,36 +1520,54 @@ class GeminiLiveADKConnection:
                             if latest_session:
                                 # Log session state for debugging
                                 event_count = len(latest_session.events) if hasattr(latest_session, 'events') else 0
-                                logger.info(f"[Memory Bank] Retrieved session has {event_count} events")
+                                logger.info(f"[Memory Bank] Retrieved session from ADK has {event_count} events")
 
                                 # Log session details
-                                logger.info(f"[Memory Bank] Session ID: {latest_session.id}")
+                                logger.info(f"[Memory Bank] Session ID: {latest_session.id if hasattr(latest_session, 'id') else 'N/A'}")
                                 logger.info(f"[Memory Bank] Session app_name: {latest_session.app_name}")
                                 logger.info(f"[Memory Bank] Session user_id: {latest_session.user_id}")
 
-                                # Check if events have content
-                                if event_count > 0:
+                                # Only persist if we have events
+                                if event_count == 0:
+                                    logger.warning(
+                                        f"[Memory Bank] ⚠ Session has no events yet, skipping persistence. "
+                                        f"This may be the first turn before events are committed."
+                                    )
+                                else:
+                                    # Check if events have content
                                     events_with_content = sum(
                                         1 for e in latest_session.events
                                         if hasattr(e, 'content') and e.content is not None
                                     )
                                     logger.info(f"[Memory Bank] Events with content: {events_with_content}/{event_count}")
 
-                                # Pass the Session object directly
-                                success = await memory_service.add_session_to_memory(
-                                    session=latest_session,
-                                )
+                                    # Persist to Memory Bank
+                                    success = await memory_service.add_session_to_memory(
+                                        session=latest_session,
+                                    )
 
-                                if success:
-                                    logger.info(f"[Memory Bank] ✓ Session {self.session_id} persisted successfully")
-                                else:
-                                    logger.warning(f"[Memory Bank] ⚠ Session {self.session_id} persistence skipped")
+                                    if success:
+                                        logger.info(
+                                            f"[Memory Bank] ✅ SUCCESS: Session persisted to Vertex AI "
+                                            f"(session={self.session_id}, events={event_count}, "
+                                            f"with_content={events_with_content})"
+                                        )
+                                    else:
+                                        logger.warning(
+                                            f"[Memory Bank] ⚠️ SKIPPED: Persistence skipped "
+                                            f"(session={self.session_id}, events={event_count}) - "
+                                            f"Check memory_service logs for details"
+                                        )
                             else:
-                                logger.warning(f"[Memory Bank] ⚠ Could not retrieve session {self.session_id}")
+                                logger.error(
+                                    f"[Memory Bank] ❌ ERROR: Could not retrieve session from ADK "
+                                    f"(session={self.session_id}) - Session may not exist in InMemorySessionService"
+                                )
 
                         except Exception as e:
                             logger.error(
-                                f"[Memory Bank] ✗ Failed to persist session {self.session_id}: {e}",
+                                f"[Memory Bank] ❌ EXCEPTION: Failed to persist session "
+                                f"(session={self.session_id}): {e}",
                                 exc_info=True
                             )
 
@@ -1507,25 +1584,20 @@ class GeminiLiveADKConnection:
 
     async def _save_transcript(self, role: str, text: str):
         """
-        Save conversation transcript.
+        Log conversation transcript for debugging.
 
-        When Memory Bank is enabled, conversation history is automatically
-        persisted via callbacks. This method only saves to Redis when Memory
-        Bank is disabled for backwards compatibility.
+        NOTE: Conversation history is automatically persisted to Vertex AI Memory Bank
+        via turn_complete events. This method is kept only for debug logging.
+
+        Args:
+            role: Speaker role (user or assistant)
+            text: Transcript text
         """
-        # Only save to Redis if Memory Bank is not enabled
-        # When Memory Bank is enabled, callbacks handle persistence automatically
-        if not settings.enable_memory_bank:
-            message = ConversationMessage(
-                role=role,
-                text=text,
-                timestamp=datetime.now(),
-            )
-            await redis_client.add_conversation_message(self.session_id, message)
-        else:
-            logger.debug(
-                f"[Transcript] Skipping Redis save (Memory Bank handles persistence)"
-            )
+        # Log transcript for debugging (not persisted to storage)
+        logger.debug(f"[Transcript] {role}: {text[:100]}{'...' if len(text) > 100 else ''}")
+
+        # Conversation persistence is handled by Memory Bank on turn_complete
+        # See _agent_to_client_messaging() method around line 1455 for Memory Bank integration
 
     async def disconnect(self):
         """Clean up ADK resources."""
