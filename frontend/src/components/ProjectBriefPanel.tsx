@@ -13,6 +13,8 @@
 import { useEffect, useState } from 'react';
 import { useProjectStore } from '@/stores/useProjectStore';
 import { cn } from '@/lib/utils';
+import { ReferenceImageUpload } from './ReferenceImageUpload';
+import { ReferenceImagesDisplay } from './ReferenceImagesDisplay';
 
 export function ProjectBriefPanel() {
   const { brief, changedFields, clearChangedFields } = useProjectStore();
@@ -50,11 +52,30 @@ export function ProjectBriefPanel() {
 
       <div className="flex-1 overflow-y-auto px-3 pb-3">
         <div className="space-y-1.5">
-        <BriefField
-          label="Product"
-          value={brief.product_name}
-          highlighted={isFieldHighlighted('product_name')}
-        />
+        {/* Product with Upload Icon */}
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex-1">
+            <BriefField
+              label="Product"
+              value={brief.product_name}
+              highlighted={isFieldHighlighted('product_name')}
+            />
+          </div>
+          <ReferenceImageUpload projectId={brief.project_id} />
+        </div>
+
+        {/* Reference Images - Right below product */}
+        {brief.reference_images && brief.reference_images.length > 0 && (
+          <div
+            className={cn(
+              'transition-colors duration-500',
+              isFieldHighlighted('reference_images') && 'bg-purple-500/10 -mx-2 px-2 py-1 rounded'
+            )}
+          >
+            <div className="text-xs font-medium text-zinc-400 mb-2">Reference Images</div>
+            <ReferenceImagesDisplay images={brief.reference_images} projectId={brief.project_id} />
+          </div>
+        )}
 
         <BriefField
           label="Category"

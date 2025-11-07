@@ -36,7 +36,7 @@ export function AgentStatusBar({ onReconfigure, selectedModel, selectedVoice }: 
         {/* Header Row */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <Sparkles className="w-5 h-5 text-purple-400" />
+            <Sparkles className="w-10 h-10 text-purple-400" />
             <div>
               <h2 className="text-2xl font-semibold text-zinc-100">
                 AI Agency Hub

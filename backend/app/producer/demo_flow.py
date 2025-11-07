@@ -265,6 +265,7 @@ class AuraDemoFlow:
             "theme": brief.theme,
             "brand_tone": brief.brand_tone,
             "key_features": brief.key_features,
+            "reference_images": [img.model_dump() for img in brief.reference_images],
         }
 
         from app.services.orchestration import orchestrator

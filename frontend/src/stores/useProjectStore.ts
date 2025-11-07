@@ -22,6 +22,12 @@ export interface ProjectBrief {
   brand_tone: string;
   target_market: string;
   initial_sketch_url?: string;
+  reference_images?: Array<{
+    asset_id: string;
+    url: string;
+    description: string;
+    generation_params?: any;
+  }>;
   selected_slogan?: string;
   selected_image?: {
     asset_id: string;

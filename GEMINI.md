@@ -25,7 +25,7 @@ The system is built with a product-agnostic design, capable of handling any prod
 The project is a monorepo with two main components: `frontend` and `backend`.
 
 -   **`backend/`**: A Python FastAPI application that serves the core business logic.
-    -   `app/agents/`: Contains the logic for each specialist AI agent (Art Director, Strategist, etc.).
+    -   `app/agents/`: Contains the logic for each specialist AI agent (Art Director, Strategist, etc.). The agents follow an "execute-critique-revise" loop to ensure quality.
     -   `app/producer/`: Holds the logic for the Executive Producer, including planning and critique.
     -   `app/services/`: Core services like Redis client, Google AI API clients, agent orchestration, and the event bus.
     -   `app/models/`: Pydantic models for data structures like the Project Brief and Assets.

@@ -32,6 +32,7 @@ class ProjectBrief(BaseModel):
     brand_tone: str  # "futuristic", "luxury", "playful", "edgy", etc.
     target_market: str
     initial_sketch_url: Optional[str] = None
+    reference_images: List[ImageAsset] = []  # User-uploaded reference images for Art Director
 
     # Strategy outputs
     personas: List[CustomerPersona] = []

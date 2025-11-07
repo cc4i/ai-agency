@@ -60,6 +60,7 @@ class ArtDirectorAgent(AgentBase):
         product_category = task.get("product_category", "product")
         brand_tone = task.get("brand_tone", "professional")
         key_features = task.get("key_features", [])
+        reference_images = task.get("reference_images", [])
 
         # Get category-specific guidelines
         visual_guidelines = CATEGORY_VISUAL_GUIDELINES.get(
@@ -79,6 +80,7 @@ class ArtDirectorAgent(AgentBase):
                 key_features=key_features,
                 visual_guidelines=visual_guidelines,
                 variation=i + 1,
+                reference_images=reference_images,
             )
             images.append(image)
 
@@ -103,6 +105,7 @@ class ArtDirectorAgent(AgentBase):
         key_features: list,
         visual_guidelines: str,
         variation: int,
+        reference_images: list = [],
     ) -> ImageAsset:
         """
         Generate a single hero image.
@@ -120,6 +123,28 @@ class ArtDirectorAgent(AgentBase):
         Returns:
             ImageAsset with generated image
         """
+        # Build reference style guidance if reference images provided
+        reference_guidance = ""
+        if reference_images:
+            reference_count = len(reference_images)
+            reference_descriptions = []
+            for i, img in enumerate(reference_images[:3], 1):  # Max 3 references in prompt
+                desc = img.get('description', f'Reference {i}')
+                reference_descriptions.append(f"- Reference {i}: {desc}")
+
+            reference_guidance = f"""
+REFERENCE STYLE GUIDANCE:
+The user has provided {reference_count} reference image(s) to guide the visual style.
+Match the overall aesthetic, composition style, lighting quality, and color palette of these references.
+{chr(10).join(reference_descriptions)}
+
+Use these references as inspiration for:
+- Visual composition and framing
+- Lighting mood and quality
+- Color grading and palette
+- Overall artistic direction
+"""
+
         # Build comprehensive prompt
         prompt = f"""
         Create a stunning photorealistic hero image for a {product_category} campaign.
@@ -129,7 +154,7 @@ class ArtDirectorAgent(AgentBase):
         THEME: {theme}
         BRAND TONE: {brand_tone}
         KEY FEATURES TO HIGHLIGHT: {', '.join(key_features[:3])}
-
+        {reference_guidance}
         VISUAL STYLE:
         {visual_guidelines}
 

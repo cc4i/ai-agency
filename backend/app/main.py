@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
@@ -368,19 +368,118 @@ async def get_project(project_id: str):
     return brief.model_dump()
 
 
+@app.post("/api/projects/{project_id}/reference-images")
+async def add_reference_image(project_id: str, image: dict):
+    """Add reference image to project brief (max 1)."""
+    from fastapi import HTTPException
+    from datetime import datetime
+
+    # Get current brief
+    brief = await redis_client.get_project_brief(project_id)
+    if not brief:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Enforce max 1 reference image
+    if len(brief.reference_images) >= 1:
+        raise HTTPException(status_code=400, detail="Only 1 reference image allowed. Delete the existing one first.")
+
+    # Add image to reference_images list
+    from app.models.assets import ImageAsset
+    image_asset = ImageAsset(**image)
+    brief.reference_images.append(image_asset)
+    brief.updated_at = datetime.utcnow()
+
+    # Save to Redis
+    await redis_client.save_project_brief(brief)
+
+    # Broadcast WebSocket event (note: frontend expects "brief_update" not "brief_updated")
+    await redis_client.client.publish(
+        f"project:{project_id}:events",
+        json.dumps({
+            "type": "brief_update",
+            "data": {
+                "brief": brief.model_dump(mode="json"),
+                "changed_fields": ["reference_images"]
+            }
+        })
+    )
+
+    logger.info(f"Added reference image {image_asset.asset_id} to project {project_id}")
+    return {"status": "success", "image": image_asset.model_dump()}
+
+
+@app.delete("/api/projects/{project_id}/reference-images/{asset_id}")
+async def remove_reference_image(project_id: str, asset_id: str):
+    """Remove reference image from project brief."""
+    from fastapi import HTTPException
+    from datetime import datetime
+
+    # Get current brief
+    brief = await redis_client.get_project_brief(project_id)
+    if not brief:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Remove image with matching asset_id
+    original_count = len(brief.reference_images)
+    brief.reference_images = [
+        img for img in brief.reference_images
+        if img.asset_id != asset_id
+    ]
+
+    if len(brief.reference_images) == original_count:
+        raise HTTPException(status_code=404, detail="Reference image not found")
+
+    brief.updated_at = datetime.utcnow()
+
+    # Save to Redis
+    await redis_client.save_project_brief(brief)
+
+    # Broadcast WebSocket event (note: frontend expects "brief_update" not "brief_updated")
+    await redis_client.client.publish(
+        f"project:{project_id}:events",
+        json.dumps({
+            "type": "brief_update",
+            "data": {
+                "brief": brief.model_dump(mode="json"),
+                "changed_fields": ["reference_images"]
+            }
+        })
+    )
+
+    logger.info(f"Removed reference image {asset_id} from project {project_id}")
+    return {"status": "success", "deleted": asset_id}
+
+
 @app.post("/api/assets/upload")
-async def upload_asset():
-    """Upload an asset (sketch, image, etc.)."""
+async def upload_asset(file: UploadFile = File(...)):
+    """Upload reference image and convert to base64 data URI."""
+    from fastapi import HTTPException
+    import base64
     import uuid
+    from datetime import datetime
 
-    # For now, return placeholder
-    # In production, this would upload to Google Cloud Storage
-    asset_id = f"asset_{uuid.uuid4().hex[:12]}"
+    # Validate file type
+    allowed_types = ['image/png', 'image/jpeg', 'image/jpg']
+    if file.content_type not in allowed_types:
+        raise HTTPException(status_code=400, detail="Only PNG/JPG images allowed")
 
+    # Read and validate size (5MB limit)
+    contents = await file.read()
+    if len(contents) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File too large (max 5MB)")
+
+    # Convert to base64 data URI
+    base64_data = base64.b64encode(contents).decode('utf-8')
+    data_uri = f"data:{file.content_type};base64,{base64_data}"
+
+    # Return ImageAsset schema
     return {
-        "asset_id": asset_id,
-        "url": f"https://storage.googleapis.com/{settings.gcs_bucket_name}/{asset_id}",
-        "status": "uploaded"
+        "asset_id": f"ref_{uuid.uuid4().hex[:12]}",
+        "url": data_uri,
+        "description": file.filename,
+        "generation_params": {
+            "uploaded_at": datetime.utcnow().isoformat()
+        }
     }
 
 

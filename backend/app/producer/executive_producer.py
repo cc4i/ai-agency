@@ -313,6 +313,7 @@ class ExecutiveProducer:
                 "theme": brief.theme,
                 "brand_tone": brief.brand_tone,
                 "key_features": brief.key_features,
+                "reference_images": [img.model_dump() for img in brief.reference_images],
             }
             await self.delegate_to_agent("art_director", art_task, announce=False)
 

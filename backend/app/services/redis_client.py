@@ -159,7 +159,7 @@ class RedisClient:
         # Fields that need JSON deserialization
         json_fields = [
             'key_features', 'personas', 'slogans', 'hero_images',
-            'selected_image', 'campaign_plan', 'completed_assets'
+            'selected_image', 'campaign_plan', 'completed_assets', 'reference_images'
         ]
 
         parsed_data = {}
@@ -171,7 +171,7 @@ class RedisClient:
                         parsed_data[key] = json.loads(value)
                     else:
                         # Set defaults for required list fields
-                        if key in ['key_features', 'personas', 'slogans', 'hero_images']:
+                        if key in ['key_features', 'personas', 'slogans', 'hero_images', 'reference_images']:
                             parsed_data[key] = []
                         elif key == 'completed_assets':
                             parsed_data[key] = {}
@@ -179,7 +179,7 @@ class RedisClient:
                             parsed_data[key] = None
                 except (json.JSONDecodeError, TypeError):
                     # Fallback to defaults on parse error
-                    if key in ['key_features', 'personas', 'slogans', 'hero_images']:
+                    if key in ['key_features', 'personas', 'slogans', 'hero_images', 'reference_images']:
                         parsed_data[key] = []
                     elif key == 'completed_assets':
                         parsed_data[key] = {}
