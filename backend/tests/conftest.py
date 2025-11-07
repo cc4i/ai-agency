@@ -6,8 +6,14 @@ used across both unit and integration tests.
 
 import asyncio
 import os
+import sys
 import pytest
 from unittest.mock import MagicMock
+
+# Add the project root directory to the Python path to resolve import errors.
+# This ensures that the 'app' module and its sub-packages are discoverable
+# by pytest when running tests from the 'backend/tests' directory.
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # Set test environment variables
 os.environ.setdefault("ENVIRONMENT", "test")
