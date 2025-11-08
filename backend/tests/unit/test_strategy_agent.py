@@ -91,10 +91,49 @@ async def test_strategy_agent_exactly_three_personas(sample_strategy_task):
 
     mock_visual_analysis = "Product visual analysis"
 
+    mock_response = {
+        "personas": [
+            {
+                "name": "Alex 'The Night Runner'",
+                "age_range": "25-32",
+                "description": "Urban professional",
+                "pain_points": ["Visibility"],
+                "motivations": ["Fitness"],
+                "product_usage_context": "Night running"
+            },
+            {
+                "name": "Maya 'Tech Explorer'",
+                "age_range": "18-24",
+                "description": "Early adopter",
+                "pain_points": ["Boredom"],
+                "motivations": ["Technology"],
+                "product_usage_context": "Social fitness"
+            },
+            {
+                "name": "Jordan 'Innovator'",
+                "age_range": "28-35",
+                "description": "Fitness enthusiast",
+                "pain_points": ["Plateaus"],
+                "motivations": ["Competition"],
+                "product_usage_context": "Training"
+            }
+        ],
+        "slogans": [
+            "Step Into Tomorrow",
+            "Light Up Your Run",
+            "Run on Light",
+            "Glow Forward",
+            "Future at Your Feet"
+        ],
+        "market_analysis": "Strong demand",
+        "visual_theme_extracted": "Tokyo neon",
+        "category_insights": "Urban footwear market"
+    }
+
     with patch('app.agents.strategy.gemini_vision_client') as mock_vision, \
          patch('app.agents.strategy.gemini_pro_client') as mock_gemini:
         mock_vision.analyze_image = AsyncMock(return_value=mock_visual_analysis)
-        mock_gemini.generate_content = AsyncMock(return_value="Mock response")
+        mock_gemini.generate_content = AsyncMock(return_value=json.dumps(mock_response))
 
         result = await agent.execute(sample_strategy_task, {})
 
@@ -118,10 +157,49 @@ async def test_strategy_agent_exactly_five_slogans(sample_strategy_task):
 
     mock_visual_analysis = "Product visual analysis"
 
+    mock_response = {
+        "personas": [
+            {
+                "name": "Alex 'The Night Runner'",
+                "age_range": "25-32",
+                "description": "Urban professional",
+                "pain_points": ["Visibility"],
+                "motivations": ["Fitness"],
+                "product_usage_context": "Night running"
+            },
+            {
+                "name": "Maya 'Tech Explorer'",
+                "age_range": "18-24",
+                "description": "Early adopter",
+                "pain_points": ["Boredom"],
+                "motivations": ["Technology"],
+                "product_usage_context": "Social fitness"
+            },
+            {
+                "name": "Jordan 'Innovator'",
+                "age_range": "28-35",
+                "description": "Fitness enthusiast",
+                "pain_points": ["Plateaus"],
+                "motivations": ["Competition"],
+                "product_usage_context": "Training"
+            }
+        ],
+        "slogans": [
+            "Step Into Tomorrow",
+            "Light Up Your Run",
+            "Run on Light",
+            "Glow Forward",
+            "Future at Your Feet"
+        ],
+        "market_analysis": "Strong demand",
+        "visual_theme_extracted": "Tokyo neon",
+        "category_insights": "Urban footwear market"
+    }
+
     with patch('app.agents.strategy.gemini_vision_client') as mock_vision, \
          patch('app.agents.strategy.gemini_pro_client') as mock_gemini:
         mock_vision.analyze_image = AsyncMock(return_value=mock_visual_analysis)
-        mock_gemini.generate_content = AsyncMock(return_value="Mock response")
+        mock_gemini.generate_content = AsyncMock(return_value=json.dumps(mock_response))
 
         result = await agent.execute(sample_strategy_task, {})
 
@@ -150,10 +228,49 @@ async def test_strategy_agent_product_category_adaptation(sample_strategy_task):
 
     mock_visual_analysis = "Volcanic energy aesthetic"
 
+    mock_response = {
+        "personas": [
+            {
+                "name": "Alex 'The Night Runner'",
+                "age_range": "25-32",
+                "description": "Urban professional",
+                "pain_points": ["Visibility"],
+                "motivations": ["Fitness"],
+                "product_usage_context": "Night running"
+            },
+            {
+                "name": "Maya 'Tech Explorer'",
+                "age_range": "18-24",
+                "description": "Early adopter",
+                "pain_points": ["Boredom"],
+                "motivations": ["Technology"],
+                "product_usage_context": "Social fitness"
+            },
+            {
+                "name": "Jordan 'Innovator'",
+                "age_range": "28-35",
+                "description": "Fitness enthusiast",
+                "pain_points": ["Plateaus"],
+                "motivations": ["Competition"],
+                "product_usage_context": "Training"
+            }
+        ],
+        "slogans": [
+            "Step Into Tomorrow",
+            "Light Up Your Run",
+            "Run on Light",
+            "Glow Forward",
+            "Future at Your Feet"
+        ],
+        "market_analysis": "Strong demand",
+        "visual_theme_extracted": "Tokyo neon",
+        "category_insights": "Urban footwear market"
+    }
+
     with patch('app.agents.strategy.gemini_vision_client') as mock_vision, \
          patch('app.agents.strategy.gemini_pro_client') as mock_gemini:
         mock_vision.analyze_image = AsyncMock(return_value=mock_visual_analysis)
-        mock_gemini.generate_content = AsyncMock(return_value="Mock response")
+        mock_gemini.generate_content = AsyncMock(return_value=json.dumps(mock_response))
 
         result = await agent.execute(beverage_task, {})
 
