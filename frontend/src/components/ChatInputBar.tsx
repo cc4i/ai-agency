@@ -31,7 +31,7 @@ export function ChatInputBar({
 }: ChatInputBarProps) {
   const { audioLevel } = useProjectStore();
   const [message, setMessage] = useState('');
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleSend = () => {
@@ -39,15 +39,30 @@ export function ChatInputBar({
       onSendText(message);
       setMessage('');
       inputRef.current?.focus();
+      // Reset textarea height
+      if (inputRef.current) {
+        inputRef.current.style.height = 'auto';
+      }
     }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    // CMD+ENTER (Mac) or CTRL+ENTER (Windows/Linux)
+    // CMD+ENTER (Mac) or CTRL+ENTER (Windows/Linux) to send
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault();
       handleSend();
     }
+    // Plain Enter just adds a new line (default behavior)
+  };
+
+  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setMessage(e.target.value);
+    // Auto-resize textarea up to max height
+    e.target.style.height = 'auto';
+    const newHeight = Math.min(e.target.scrollHeight, 200); // Max 200px
+    e.target.style.height = `${newHeight}px`;
+    // Enable scrolling if content exceeds max height
+    e.target.style.overflowY = e.target.scrollHeight > 200 ? 'auto' : 'hidden';
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -82,14 +97,14 @@ export function ChatInputBar({
 
         {/* Text Input - Center (flex-1) */}
         <div className="flex-1 relative">
-          <input
+          <textarea
             ref={inputRef}
-            type="text"
             value={message}
-            onChange={(e) => setMessage(e.target.value)}
+            onChange={handleChange}
             onKeyDown={handleKeyDown}
-            placeholder="Type a message..."
-            className="w-full bg-zinc-800 rounded-lg px-4 py-2.5 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-shadow"
+            placeholder="Type a message... (Enter for new line, Cmd+Enter to send)"
+            rows={1}
+            className="w-full bg-zinc-800 rounded-lg px-4 py-2.5 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-shadow resize-none overflow-hidden min-h-[42px] max-h-[200px]"
           />
           <div className="absolute right-3 -bottom-5 text-xs text-zinc-600 flex items-center gap-2">
             {/* Connection Status Indicator */}

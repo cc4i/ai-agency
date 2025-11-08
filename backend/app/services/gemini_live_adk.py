@@ -729,6 +729,9 @@ async def create_campaign_strategy(
         # Send agent status update: thinking (frontend expects 'thinking', not 'working')
         await send_agent_status("strategy", "thinking", "Generating campaign strategy and slogans")
 
+        # Announce to user that agent is starting
+        await send_announcement("Strategy Agent is creating campaign slogans and customer personas...", "info")
+
         # Execute agent with announcement callback for real-time updates
         result = await orchestrator.execute_agent(
             "strategy",
@@ -845,6 +848,9 @@ async def generate_hero_images(
 
         # Send agent status update: thinking
         await send_agent_status("art_director", "thinking", "Generating hero images")
+
+        # Announce to user that agent is starting
+        await send_announcement("Art Director is creating hero images for your campaign...", "info")
 
         # Execute agent with announcement callback for real-time updates
         result = await orchestrator.execute_agent(
@@ -989,6 +995,9 @@ async def generate_social_video(
         # Send agent status update: thinking
         await send_agent_status("video_producer", "thinking", "Generating social media video")
 
+        # Announce to user that agent is starting
+        await send_announcement("Video Producer is creating your social media video...", "info")
+
         # Execute agent with announcement callback for real-time updates
         result = await orchestrator.execute_agent(
             "video_producer",
@@ -1071,6 +1080,9 @@ async def generate_audio_assets(
 
         # Send agent status update: thinking
         await send_agent_status("audio_team", "thinking", "Generating audio assets")
+
+        # Announce to user that agent is starting
+        await send_announcement("Audio Team is composing jingles and creating audio assets...", "info")
 
         # Execute agent with announcement callback for real-time updates
         result = await orchestrator.execute_agent(
@@ -1189,6 +1201,9 @@ async def generate_landing_page(
 
         # Send agent status update: thinking
         await send_agent_status("web_dev", "thinking", "Generating landing page")
+
+        # Announce to user that agent is starting
+        await send_announcement("Web Dev Agent is building your landing page...", "info")
 
         # Execute agent with announcement callback for real-time updates
         result = await orchestrator.execute_agent(
