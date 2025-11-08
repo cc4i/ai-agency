@@ -321,30 +321,173 @@ async def send_agent_status(agent_id: str, status: str, current_task: str = "") 
     }, frontend_ws=frontend_ws)
 
 
-async def add_memory_summary(session: Any, summary: str) -> None:
+def _format_strategy_summary(result: Dict[str, Any], product_name: str) -> str:
     """
-    Add a text summary to the session for Memory Bank persistence.
-
-    Memory Bank only stores conversational content (text), not function calls.
-    This helper adds structured data as text so it can be retrieved later.
+    Format strategy agent results as searchable text for Memory Bank.
 
     Args:
-        session: ADK Session object
-        summary: Text summary to add to conversation history
+        result: Strategy agent output with slogans, personas, market_analysis
+        product_name: Product name
+
+    Returns:
+        Formatted markdown summary
+    """
+    from datetime import datetime
+
+    summary_parts = [
+        f"[STRATEGY COMPLETE - {product_name}]",
+        f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "",
+        "CAMPAIGN SLOGANS GENERATED:"
+    ]
+
+    # Add slogans
+    slogans = result.get("slogans", [])
+    for i, slogan in enumerate(slogans, 1):
+        summary_parts.append(f'{i}. "{slogan}"')
+
+    summary_parts.append("")
+    summary_parts.append("CUSTOMER PERSONAS CREATED:")
+
+    # Add personas
+    personas = result.get("personas", [])
+    for persona in personas:
+        summary_parts.append(f"\n• {persona.get('name', 'Unknown')} ({persona.get('age_range', 'N/A')})")
+        summary_parts.append(f"  Description: {persona.get('description', 'N/A')}")
+
+        pain_points = persona.get('pain_points', [])
+        if pain_points:
+            summary_parts.append(f"  Pain Points: {', '.join(pain_points[:3])}")
+
+        motivations = persona.get('motivations', [])
+        if motivations:
+            summary_parts.append(f"  Motivations: {', '.join(motivations[:3])}")
+
+    # Add market analysis excerpt
+    market_analysis = result.get("market_analysis", "")
+    if market_analysis:
+        summary_parts.append("")
+        summary_parts.append("MARKET ANALYSIS:")
+        summary_parts.append(market_analysis[:300] + "..." if len(market_analysis) > 300 else market_analysis)
+
+    return "\n".join(summary_parts)
+
+
+def _format_image_summary(images: list, product_name: str, theme: str) -> str:
+    """
+    Format hero images as searchable text for Memory Bank.
+
+    Args:
+        images: List of generated images with metadata
+        product_name: Product name
+        theme: Visual theme
+
+    Returns:
+        Formatted markdown summary
+    """
+    from datetime import datetime
+
+    summary_parts = [
+        f"[HERO IMAGES GENERATED - {product_name}]",
+        f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "",
+        f"Art Director created {len(images)} image variations:",
+        f"Visual Theme: {theme}",
+        ""
+    ]
+
+    for i, img in enumerate(images, 1):
+        if isinstance(img, dict):
+            variation = img.get('variation', i)
+            style_guide = img.get('style_guide', {})
+            summary_parts.append(f"Variation {variation}:")
+            summary_parts.append(f"  Style: {style_guide.get('description', 'N/A')}")
+            summary_parts.append(f"  Mood: {style_guide.get('mood', 'N/A')}")
+            summary_parts.append(f"  Setting: {style_guide.get('setting', 'N/A')}")
+            summary_parts.append("")
+
+    return "\n".join(summary_parts)
+
+
+async def inject_creative_summary(
+    session_service: Any,
+    session: Any,
+    tool_name: str,
+    result: Dict[str, Any],
+    product_info: Dict[str, Any]
+) -> None:
+    """
+    Inject creative tool results as searchable text into ADK session for Memory Bank.
+
+    Memory Bank filters out function_response parts, so we inject text summaries
+    that can be semantically searched while keeping full structured data in Redis.
+
+    Args:
+        session_service: ADK SessionService
+        session: Current ADK session
+        tool_name: Name of the tool that executed
+        result: Tool execution result
+        product_info: Product name and other context
     """
     try:
         from google.genai.types import Content, Part
 
-        # Add as an assistant message (system context)
-        session.add_event(
-            Content(
-                role='model',
-                parts=[Part(text=f"[MEMORY SUMMARY] {summary}")]
+        product_name = product_info.get('product_name', 'Product')
+        summary = ""
+
+        if tool_name == "create_campaign_strategy":
+            summary = _format_strategy_summary(result, product_name)
+
+        elif tool_name == "generate_hero_images":
+            images = result.get("images", [])
+            theme = product_info.get('theme', 'modern')
+            summary = _format_image_summary(images, product_name, theme)
+
+        elif tool_name == "generate_social_video":
+            summary = f"""
+[VIDEO GENERATED - {product_name}]
+Timestamp: {result.get('created_at', 'N/A')}
+
+Video Producer created social media video:
+Duration: {result.get('duration_seconds', 'N/A')} seconds
+Platform: {result.get('platform', 'social media')}
+Style: {result.get('style', 'N/A')}
+"""
+
+        elif tool_name == "generate_audio_assets":
+            summary = f"""
+[AUDIO ASSETS GENERATED - {product_name}]
+
+Audio Team created:
+• Jingle: {result.get('jingle', {}).get('duration_seconds', 'N/A')}s musical theme
+• Podcast Ad: {result.get('podcast_ad', {}).get('duration_seconds', 'N/A')}s spoken ad
+• Script: {result.get('podcast_ad', {}).get('transcription', 'N/A')[:200]}...
+"""
+
+        elif tool_name == "generate_landing_page":
+            summary = f"""
+[LANDING PAGE GENERATED - {product_name}]
+
+Web Dev Agent created responsive landing page:
+• HTML: {len(result.get('code', {}).get('html', ''))} characters
+• CSS: {len(result.get('code', {}).get('css', ''))} characters
+• JavaScript: {len(result.get('code', {}).get('js', ''))} characters
+• Features: Countdown timer, email signup, feature highlights
+"""
+
+        if summary:
+            # Add to session
+            await session_service.append_event(
+                session,
+                Content(
+                    role='model',
+                    parts=[Part(text=summary)]
+                )
             )
-        )
-        logger.info(f"[Memory] Added summary to session: {summary[:100]}...")
+            logger.info(f"[Memory Bank] ✓ Injected {tool_name} summary ({len(summary)} chars)")
+
     except Exception as e:
-        logger.error(f"[Memory] Failed to add summary: {e}")
+        logger.warning(f"[Memory Bank] Failed to inject {tool_name} summary: {e}")
 
 
 async def send_asset_added(agent_id: str, asset_type: str, asset_data: Dict[str, Any]) -> None:
@@ -570,6 +713,13 @@ async def create_campaign_strategy(
         slogans = result.get("slogans", [])
         personas = result.get("personas", [])
 
+        # Queue creative summary for Memory Bank injection at turn_complete
+        if hasattr(create_campaign_strategy, '_connection'):
+            connection = create_campaign_strategy._connection
+            summary = _format_strategy_summary(result, product_name)
+            connection.pending_creative_summaries.append(summary)
+            logger.info(f"[Memory Bank] Queued strategy summary for injection ({len(summary)} chars)")
+
         tool_result = {
             "success": True,
             "message": f"Strategy Agent generated {len(slogans)} slogans and {len(personas)} personas. Present each slogan to the user.",
@@ -690,6 +840,13 @@ async def generate_hero_images(
             }
             for i, img in enumerate(images)
         ]
+
+        # Queue creative summary for Memory Bank injection at turn_complete
+        if hasattr(generate_hero_images, '_connection') and images:
+            connection = generate_hero_images._connection
+            summary = _format_image_summary(images, product_name, theme)
+            connection.pending_creative_summaries.append(summary)
+            logger.info(f"[Memory Bank] Queued hero images summary for injection ({len(summary)} chars)")
 
         tool_result = {
             "success": True,
@@ -1333,12 +1490,16 @@ class GeminiLiveADKConnection:
         self.live_request_queue = None
         self.live_events = None
 
+        # Storage for pending creative summaries (injected at turn_complete)
+        self.pending_creative_summaries: List[str] = []
+
         # Set context for tools (so they know which project to use)
         for tool in [update_project_brief, create_campaign_strategy, generate_hero_images,
                      generate_social_video, generate_audio_assets, generate_landing_page]:
             tool._session_id = session_id
             tool._project_id = project_id
             tool._frontend_ws = None  # Will be set after WebSocket connect
+            tool._connection = self  # Reference to connection for pending summaries
 
         # Create agent with user-selected model (per-connection instance)
         agent_kwargs = {
@@ -1787,54 +1948,83 @@ class GeminiLiveADKConnection:
             try:
                 logger.debug(f"[ADK] Processing event #{event_count}: {type(event).__name__}")
                 # Handle input transcription (user speech → text)
+                # Only process FINAL transcriptions to avoid sending partial/incomplete text
                 if event.input_transcription and event.input_transcription.text:
-                    user_text = event.input_transcription.text
+                    # Check if transcription is finished
+                    # finished=True means final, finished=False means partial, finished=None means unknown (treat as final)
+                    is_finished = getattr(event.input_transcription, 'finished', None)
 
-                    # ADD USER TEXT EVENT TO SESSION FOR MEMORY BANK
-                    # This captures what the user said as text for conversation memory
-                    # Must use session_service.append_event() to properly persist
-                    if hasattr(self, 'session') and self.session:
-                        from google.adk.events import Event
-                        user_event = Event(
-                            author="user",
-                            content=types.Content(
-                                role="user",
-                                parts=[types.Part.from_text(text=user_text)]
+                    # Only skip if explicitly marked as partial (finished=False)
+                    if is_finished is not False:
+                        user_text = event.input_transcription.text
+                        logger.debug(f"[User Transcript] Final transcription (finished={is_finished}): {user_text[:50]}...")
+
+                        # ADD USER TEXT EVENT TO SESSION FOR MEMORY BANK
+                        # This captures what the user said as text for conversation memory
+                        # Must use session_service.append_event() to properly persist
+                        if hasattr(self, 'session') and self.session:
+                            from google.adk.events import Event
+                            user_event = Event(
+                                author="user",
+                                content=types.Content(
+                                    role="user",
+                                    parts=[types.Part.from_text(text=user_text)]
+                                )
                             )
-                        )
-                        await self.session_service.append_event(self.session, user_event)
-                        logger.debug(f"[Memory Bank] Added user text event: {user_text[:50]}...")
+                            await self.session_service.append_event(self.session, user_event)
+                            logger.debug(f"[Memory Bank] Added user text event: {user_text[:50]}...")
+
+                        # SEND USER TRANSCRIPT TO FRONTEND FOR DISPLAY
+                        # Frontend TranscriptDisplay expects "text_output" type with "text" and "role"
+                        await self.frontend_ws.send_text(json.dumps({
+                            "type": "text_output",
+                            "role": "user",
+                            "text": user_text,
+                        }))
+                    else:
+                        # Partial transcription (finished=False) - log but don't send to frontend
+                        logger.debug(f"[User Transcript] Partial (finished=False, skipped): {event.input_transcription.text[:30]}...")
 
                 # Handle output transcription (assistant speech → text)
-                # Frontend expects "text_output" type with "text" and "role" fields
+                # Only process FINAL transcriptions to avoid sending partial/incomplete text
                 if event.output_transcription and event.output_transcription.text:
-                    transcript_text = event.output_transcription.text
+                    # Check if transcription is finished
+                    # finished=True means final, finished=False means partial, finished=None means unknown (treat as final)
+                    is_finished = getattr(event.output_transcription, 'finished', None)
 
-                    # Log for debugging
-                    await self._save_transcript("assistant", transcript_text)
+                    # Only skip if explicitly marked as partial (finished=False)
+                    if is_finished is not False:
+                        transcript_text = event.output_transcription.text
+                        logger.debug(f"[Assistant Transcript] Final transcription (finished={is_finished}): {transcript_text[:50]}...")
 
-                    # ADD ASSISTANT TEXT EVENT TO SESSION FOR MEMORY BANK
-                    # The ADK session events only contain function calls by default
-                    # We need to manually add text content for conversation memory
-                    # Must use session_service.append_event() to properly persist
-                    if hasattr(self, 'session') and self.session:
-                        from google.adk.events import Event
-                        assistant_event = Event(
-                            author="model",
-                            content=types.Content(
-                                role="model",
-                                parts=[types.Part.from_text(text=transcript_text)]
+                        # Log for debugging
+                        await self._save_transcript("assistant", transcript_text)
+
+                        # ADD ASSISTANT TEXT EVENT TO SESSION FOR MEMORY BANK
+                        # The ADK session events only contain function calls by default
+                        # We need to manually add text content for conversation memory
+                        # Must use session_service.append_event() to properly persist
+                        if hasattr(self, 'session') and self.session:
+                            from google.adk.events import Event
+                            assistant_event = Event(
+                                author="model",
+                                content=types.Content(
+                                    role="model",
+                                    parts=[types.Part.from_text(text=transcript_text)]
+                                )
                             )
-                        )
-                        await self.session_service.append_event(self.session, assistant_event)
-                        logger.debug(f"[Memory Bank] Added assistant text event: {transcript_text[:50]}...")
+                            await self.session_service.append_event(self.session, assistant_event)
+                            logger.debug(f"[Memory Bank] Added assistant text event: {transcript_text[:50]}...")
 
-                    # Send to frontend (matching expected format)
-                    await self.frontend_ws.send_text(json.dumps({
-                        "type": "text_output",
-                        "role": "assistant",
-                        "text": transcript_text,
-                    }))
+                        # Send to frontend (matching expected format)
+                        await self.frontend_ws.send_text(json.dumps({
+                            "type": "text_output",
+                            "role": "assistant",
+                            "text": transcript_text,
+                        }))
+                    else:
+                        # Partial transcription (finished=False) - log but don't send to frontend
+                        logger.debug(f"[Assistant Transcript] Partial (finished=False, skipped): {event.output_transcription.text[:30]}...")
 
                 # Handle audio output
                 # Frontend expects "audio_output" type with "data" field and "mime_type"
@@ -1904,6 +2094,30 @@ class GeminiLiveADKConnection:
                                         if hasattr(e, 'content') and e.content is not None
                                     )
                                     logger.info(f"[Memory Bank] Events with content: {events_with_content}/{event_count}")
+
+                                    # ============================================================
+                                    # INJECT PENDING CREATIVE SUMMARIES FOR MEMORY BANK
+                                    # ============================================================
+                                    # Inject any pending creative tool summaries queued during this turn
+                                    if self.pending_creative_summaries:
+                                        try:
+                                            from google.genai.types import Content, Part
+
+                                            for summary in self.pending_creative_summaries:
+                                                latest_session.add_event(
+                                                    Content(
+                                                        role='model',
+                                                        parts=[Part(text=summary)]
+                                                    )
+                                                )
+                                                logger.info(f"[Memory Bank] ✓ Injected creative summary ({len(summary)} chars)")
+
+                                            # Clear pending summaries
+                                            count = len(self.pending_creative_summaries)
+                                            self.pending_creative_summaries.clear()
+                                            logger.info(f"[Memory Bank] Injected {count} creative summaries, queue cleared")
+                                        except Exception as e:
+                                            logger.warning(f"[Memory Bank] Failed to inject creative summaries: {e}")
 
                                     # ============================================================
                                     # INJECT PROJECT STATE SUMMARY FOR MEMORY BANK
