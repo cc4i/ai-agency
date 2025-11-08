@@ -32,10 +32,28 @@ def sample_context():
     return {"project_id": "test_project"}
 
 
+from unittest.mock import AsyncMock, patch
+import json
+
 @pytest.mark.asyncio
 async def test_strategy_agent_execute(strategy_agent, sample_task, sample_context):
     """Test Strategy Agent execution."""
-    result = await strategy_agent.execute(sample_task, sample_context)
+    mock_response = {
+        "personas": [
+            {"name": "p1", "age_range": "20-30", "description": "d1", "pain_points": [], "motivations": [], "product_usage_context": ""},
+            {"name": "p2", "age_range": "30-40", "description": "d2", "pain_points": [], "motivations": [], "product_usage_context": ""},
+            {"name": "p3", "age_range": "40-50", "description": "d3", "pain_points": [], "motivations": [], "product_usage_context": ""},
+        ],
+        "slogans": ["s1", "s2", "s3", "s4", "s5"],
+        "market_analysis": "ma",
+        "visual_theme_extracted": "vte",
+        "category_insights": "ci",
+    }
+    with patch('app.agents.strategy.gemini_vision_client') as mock_vision, \
+         patch('app.agents.strategy.gemini_pro_client') as mock_gemini:
+        mock_vision.analyze_image = AsyncMock(return_value="visual analysis")
+        mock_gemini.generate_content = AsyncMock(return_value=json.dumps(mock_response))
+        result = await strategy_agent.execute(sample_task, sample_context)
 
     # Verify result structure
     assert "personas" in result
@@ -51,8 +69,22 @@ async def test_strategy_agent_execute(strategy_agent, sample_task, sample_contex
 @pytest.mark.asyncio
 async def test_strategy_agent_critique_valid(strategy_agent, sample_task):
     """Test critique with valid output."""
-    # Create valid output
-    result = await strategy_agent.execute(sample_task, {})
+    mock_response = {
+        "personas": [
+            {"name": "p1", "age_range": "20-30", "description": "d1", "pain_points": [], "motivations": [], "product_usage_context": "electronics"},
+            {"name": "p2", "age_range": "30-40", "description": "d2", "pain_points": [], "motivations": [], "product_usage_context": "electronics"},
+            {"name": "p3", "age_range": "40-50", "description": "d3", "pain_points": [], "motivations": [], "product_usage_context": "electronics"},
+        ],
+        "slogans": ["s1", "s2", "s3", "s4", "s5"],
+        "market_analysis": "ma",
+        "visual_theme_extracted": "vte",
+        "category_insights": "ci",
+    }
+    with patch('app.agents.strategy.gemini_vision_client') as mock_vision, \
+         patch('app.agents.strategy.gemini_pro_client') as mock_gemini:
+        mock_vision.analyze_image = AsyncMock(return_value="visual analysis")
+        mock_gemini.generate_content = AsyncMock(return_value=json.dumps(mock_response))
+        result = await strategy_agent.execute(sample_task, {})
 
     # Critique should pass
     brief = {
@@ -66,13 +98,15 @@ async def test_strategy_agent_critique_valid(strategy_agent, sample_task):
 
 
 @pytest.mark.asyncio
-async def test_strategy_agent_critique_invalid():
+async def test_strategy_agent_critique_invalid(strategy_agent):
     """Test critique with invalid output."""
-    agent = StrategyAgent()
-
-    # Invalid output - wrong number of personas
+    # Invalid output - product category not mentioned in personas
     invalid_result = {
-        "personas": [],  # Should have 3
+        "personas": [
+            {"name": "p1", "age_range": "20-30", "description": "d1", "pain_points": [], "motivations": [], "product_usage_context": ""},
+            {"name": "p2", "age_range": "30-40", "description": "d2", "pain_points": [], "motivations": [], "product_usage_context": ""},
+            {"name": "p3", "age_range": "40-50", "description": "d3", "pain_points": [], "motivations": [], "product_usage_context": ""},
+        ],
         "slogans": ["test"] * 5,
         "market_analysis": "test",
         "visual_theme_extracted": "test",
@@ -80,10 +114,11 @@ async def test_strategy_agent_critique_invalid():
     }
 
     brief = {"product_category": "electronics", "brand_tone": "professional"}
-    critique = await agent.critique(invalid_result, brief)
+    critique = await strategy_agent.critique(invalid_result, brief)
 
     assert critique.status == "REVISE"
-    assert len(critique.issues) > 0
+    assert len(critique.issues) == 1
+    assert "Personas should reference electronics category" in critique.issues
 
 
 def test_strategy_agent_initialization():

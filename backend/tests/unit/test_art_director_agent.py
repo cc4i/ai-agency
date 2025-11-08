@@ -23,8 +23,19 @@ async def test_art_director_output_format(sample_art_task):
     # imagen_client.generate_images() returns List[bytes]
     mock_image_bytes = [b'fake_image_bytes_data']
 
-    with patch('app.agents.art_director.imagen_client') as mock_client:
-        mock_client.generate_images = AsyncMock(return_value=mock_image_bytes)
+    mock_image_dicts = [
+        {
+            "asset_id": "img_1",
+            "url": "data:image/png;base64,fakedata1",
+            "description": "Image 1",
+            "generation_params": {},
+        }
+        for _ in range(4)
+    ]
+
+    with patch('app.workflows.art_director_workflow.ArtDirectorWorkflow') as mock_workflow_class:
+        mock_workflow_instance = mock_workflow_class.return_value
+        mock_workflow_instance.execute = AsyncMock(return_value=mock_image_dicts)
 
         result = await agent.execute(sample_art_task, {})
 
@@ -42,8 +53,19 @@ async def test_art_director_exactly_four_images(sample_art_task):
     # imagen_client.generate_images() returns List[bytes]
     mock_image_bytes = [b'fake_image_bytes_data']
 
-    with patch('app.agents.art_director.imagen_client') as mock_client:
-        mock_client.generate_images = AsyncMock(return_value=mock_image_bytes)
+    mock_image_dicts = [
+        {
+            "asset_id": "img_1",
+            "url": "data:image/png;base64,fakedata1",
+            "description": "Image 1",
+            "generation_params": {},
+        }
+        for _ in range(4)
+    ]
+
+    with patch('app.workflows.art_director_workflow.ArtDirectorWorkflow') as mock_workflow_class:
+        mock_workflow_instance = mock_workflow_class.return_value
+        mock_workflow_instance.execute = AsyncMock(return_value=mock_image_dicts)
 
         result = await agent.execute(sample_art_task, {})
 
@@ -68,8 +90,19 @@ async def test_art_director_image_quality(sample_art_task):
     # imagen_client.generate_images() returns List[bytes]
     mock_image_bytes = [b'fake_image_bytes_data']
 
-    with patch('app.agents.art_director.imagen_client') as mock_client:
-        mock_client.generate_images = AsyncMock(return_value=mock_image_bytes)
+    mock_image_dicts = [
+        {
+            "asset_id": "img_1",
+            "url": "data:image/png;base64,fakedata1",
+            "description": "Image 1",
+            "generation_params": {},
+        }
+        for _ in range(4)
+    ]
+
+    with patch('app.workflows.art_director_workflow.ArtDirectorWorkflow') as mock_workflow_class:
+        mock_workflow_instance = mock_workflow_class.return_value
+        mock_workflow_instance.execute = AsyncMock(return_value=mock_image_dicts)
 
         result = await agent.execute(sample_art_task, {})
 
@@ -96,8 +129,19 @@ async def test_art_director_product_category_adaptation(sample_art_task):
         # imagen_client.generate_images() returns List[bytes]
         mock_image_bytes = [b'fake_image_bytes_data']
 
-        with patch('app.agents.art_director.imagen_client') as mock_client:
-            mock_client.generate_images = AsyncMock(return_value=mock_image_bytes)
+        mock_image_dicts = [
+            {
+                "asset_id": "img_1",
+                "url": "data:image/png;base64,fakedata1",
+                "description": "Image 1",
+                "generation_params": {},
+            }
+            for _ in range(4)
+        ]
+
+        with patch('app.workflows.art_director_workflow.ArtDirectorWorkflow') as mock_workflow_class:
+            mock_workflow_instance = mock_workflow_class.return_value
+            mock_workflow_instance.execute = AsyncMock(return_value=mock_image_dicts)
 
             result = await agent.execute(task, {})
 
@@ -121,8 +165,19 @@ async def test_art_director_theme_integration(sample_art_task):
         # imagen_client.generate_images() returns List[bytes]
         mock_image_bytes = [b'fake_image_bytes_data']
 
-        with patch('app.agents.art_director.imagen_client') as mock_client:
-            mock_client.generate_images = AsyncMock(return_value=mock_image_bytes)
+        mock_image_dicts = [
+            {
+                "asset_id": "img_1",
+                "url": "data:image/png;base64,fakedata1",
+                "description": "Image 1",
+                "generation_params": {},
+            }
+            for _ in range(4)
+        ]
+
+        with patch('app.workflows.art_director_workflow.ArtDirectorWorkflow') as mock_workflow_class:
+            mock_workflow_instance = mock_workflow_class.return_value
+            mock_workflow_instance.execute = AsyncMock(return_value=mock_image_dicts)
 
             result = await agent.execute(task, {})
 
@@ -141,8 +196,9 @@ async def test_art_director_error_handling():
         # Missing required fields
     }
 
-    with patch('app.agents.art_director.imagen_client') as mock_client:
-        mock_client.generate_images = AsyncMock(side_effect=Exception("Imagen API Error"))
+    with patch('app.workflows.art_director_workflow.ArtDirectorWorkflow') as mock_workflow_class:
+        mock_workflow_instance = mock_workflow_class.return_value
+        mock_workflow_instance.execute = AsyncMock(side_effect=Exception("Imagen API Error"))
 
         with pytest.raises(Exception) as exc_info:
             await agent.execute(task, {})

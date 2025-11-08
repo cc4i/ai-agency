@@ -25,12 +25,19 @@ def sample_brief():
     )
 
 
+from unittest.mock import AsyncMock, patch
+import json
+
 @pytest.mark.asyncio
 async def test_generate_plan(sample_brief):
     """Test campaign plan generation."""
     planner = CampaignPlanner()
 
-    plan = await planner.generate_plan(sample_brief)
+    # Mock the Gemini client
+    mock_plan_description = "A comprehensive marketing plan."
+    with patch('app.producer.planner.gemini_pro_client') as mock_gemini:
+        mock_gemini.generate_content = AsyncMock(return_value=mock_plan_description)
+        plan = await planner.generate_plan(sample_brief)
 
     # Verify plan structure
     assert plan.phases
@@ -53,7 +60,12 @@ def test_format_plan_for_display(sample_brief):
     import asyncio
 
     planner = CampaignPlanner()
-    plan = asyncio.run(planner.generate_plan(sample_brief))
+
+    # Mock the Gemini client
+    mock_plan_description = "A comprehensive marketing plan."
+    with patch('app.producer.planner.gemini_pro_client') as mock_gemini:
+        mock_gemini.generate_content = AsyncMock(return_value=mock_plan_description)
+        plan = asyncio.run(planner.generate_plan(sample_brief))
 
     formatted = planner.format_plan_for_display(plan)
 
