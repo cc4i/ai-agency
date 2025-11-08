@@ -133,123 +133,136 @@ class StrategyAgent(AgentBase):
             product_category, "Focus on key demographics for this product category"
         )
 
-        prompt = f"""
-        You are a marketing strategist creating a campaign for a {product_category} product.
+        prompt = f"""Generate a comprehensive marketing strategy for the following product:
 
-        PRODUCT INFORMATION:
-        - Name: {product_name}
-        - Category: {product_category}
-        - Theme: {theme}
-        - Brand Tone: {brand_tone}
-        - Target Market: {target_market}
-        - Key Features: {', '.join(key_features)}
+PRODUCT INFORMATION:
+- Name: {product_name}
+- Category: {product_category}
+- Theme: {theme}
+- Brand Tone: {brand_tone}
+- Target Market: {target_market}
+- Key Features: {', '.join(key_features)}
 
-        VISUAL ANALYSIS:
-        {visual_analysis}
+VISUAL ANALYSIS:
+{visual_analysis}
 
-        PERSONA GUIDELINES FOR {product_category.upper()}:
-        {persona_guidelines}
+PERSONA GUIDELINES:
+{persona_guidelines}
 
-        YOUR TASK:
-        Generate EXACTLY 3 customer personas and EXACTLY 5 slogans.
+REQUIREMENTS:
+1. Create EXACTLY 3 diverse customer personas specific to {product_category} buyers
+2. Generate EXACTLY 5 catchy slogans matching the {brand_tone} tone (3-5 words each)
+3. Each persona must have:
+   - Unique name (e.g., "Tech-Savvy Urban Commuter")
+   - Age range
+   - Detailed description
+   - 3 specific pain points
+   - 3 key motivations
+   - Product usage context
 
-        FORMAT YOUR RESPONSE AS JSON:
-        {{
-            "personas": [
-                {{
-                    "name": "Persona name (e.g., 'Tech-Savvy Runner')",
-                    "age_range": "Age range (e.g., '25-35')",
-                    "description": "Brief persona description",
-                    "pain_points": ["pain point 1", "pain point 2", "pain point 3"],
-                    "motivations": ["motivation 1", "motivation 2", "motivation 3"],
-                    "product_usage_context": "How and when they would use this {product_category}"
-                }},
-                // ... exactly 3 personas total
-            ],
-            "slogans": [
-                "Slogan 1 - catchy, {brand_tone} tone, 3-5 words",
-                "Slogan 2 - catchy, {brand_tone} tone, 3-5 words",
-                "Slogan 3 - catchy, {brand_tone} tone, 3-5 words",
-                "Slogan 4 - catchy, {brand_tone} tone, 3-5 words",
-                "Slogan 5 - catchy, {brand_tone} tone, 3-5 words"
-            ],
-            "market_analysis": "Brief market analysis for {product_category} category (2-3 paragraphs)",
-            "visual_theme_extracted": "Visual theme summary from the sketch",
-            "category_insights": "Key insights about the {product_category} market and trends"
-        }}
+Return a JSON object with this exact structure:
+{{
+  "personas": [
+    {{
+      "name": "string",
+      "age_range": "string",
+      "description": "string",
+      "pain_points": ["string", "string", "string"],
+      "motivations": ["string", "string", "string"],
+      "product_usage_context": "string"
+    }}
+  ],
+  "slogans": ["string", "string", "string", "string", "string"],
+  "market_analysis": "string (2-3 paragraphs)",
+  "visual_theme_extracted": "string",
+  "category_insights": "string"
+}}"""
 
-        IMPORTANT:
-        - Personas must be specific to {product_category} buyers
-        - Slogans must match the {brand_tone} brand tone
-        - Include category-specific behaviors and needs
-        - Make personas diverse and realistic
-        """
+        # Generate strategy using Gemini with JSON mode
+        import json
+        import re
 
-        response = await gemini_pro_client.generate_content(prompt)
+        # Call Gemini with JSON mode enabled for guaranteed valid JSON
+        response = await gemini_pro_client.generate_content(prompt, json_mode=True)
+        logger.info(f"Gemini JSON response received: {len(response) if response else 0} chars")
 
-        # Parse JSON response (in real implementation)
-        # For now, create mock structured output
+        # Debug: Log first 500 chars to see what's returned
+        logger.debug(f"Response preview: {response[:500]}")
+
+        # Parse JSON response with auto-repair for common issues
+        response_text = response.strip()
+
+        # Remove markdown code fences if present
+        if response_text.startswith('```'):
+            response_text = re.sub(r'^```json?\s*', '', response_text)
+            response_text = re.sub(r'\s*```$', '', response_text)
+            logger.warning("JSON mode returned markdown fences - stripping them")
+
+        # Try to parse, with auto-repair on failure
+        try:
+            parsed = json.loads(response_text)
+            logger.info(f"Successfully parsed JSON response")
+        except json.JSONDecodeError as e:
+            logger.warning(f"JSON parse error: {e} - attempting auto-repair")
+            logger.debug(f"Problematic JSON around char {e.pos}: ...{response_text[max(0, e.pos-50):e.pos+50]}...")
+
+            # Common issue: Truncated JSON - try to close it
+            repaired = response_text
+
+            # Remove trailing commas before closing braces/brackets
+            repaired = re.sub(r',(\s*[}\]])', r'\1', repaired)
+
+            # If truncated, try to close open structures
+            if not repaired.rstrip().endswith('}'):
+                logger.warning("JSON appears truncated - attempting to close structures")
+                # Count open/close braces and brackets
+                open_braces = repaired.count('{') - repaired.count('}')
+                open_brackets = repaired.count('[') - repaired.count(']')
+
+                # Close them
+                for _ in range(open_brackets):
+                    repaired += '\n  ]'
+                for _ in range(open_braces):
+                    repaired += '\n}'
+
+            # Try parsing again
+            try:
+                parsed = json.loads(repaired)
+                logger.info(f"Successfully parsed JSON after auto-repair")
+            except json.JSONDecodeError as e2:
+                logger.error(f"Auto-repair failed: {e2}")
+                logger.error(f"Full response (first 1000 chars): {response[:1000]}")
+                logger.error(f"Full response (last 500 chars): ...{response[-500:]}")
+                raise
+
+        # Extract personas
+        personas = []
+        for p_data in parsed.get("personas", []):
+            personas.append(CustomerPersona(
+                name=p_data.get("name", ""),
+                age_range=p_data.get("age_range", ""),
+                description=p_data.get("description", ""),
+                pain_points=p_data.get("pain_points", []),
+                motivations=p_data.get("motivations", []),
+                product_usage_context=p_data.get("product_usage_context", ""),
+            ))
+
+        # Extract slogans
+        slogans = parsed.get("slogans", [])
+
+        # Extract other fields
+        market_analysis = parsed.get("market_analysis", "")
+        visual_theme_extracted = parsed.get("visual_theme_extracted", visual_analysis[:200])
+        category_insights = parsed.get("category_insights", "")
+
+        logger.info(f"Parsed {len(personas)} personas and {len(slogans)} slogans from Gemini")
+
         output = StrategyAgentOutput(
-            personas=[
-                CustomerPersona(
-                    name=f"Persona 1 for {product_name}",
-                    age_range="25-35",
-                    description=f"Early adopter interested in {product_category}",
-                    pain_points=[
-                        "Needs innovative solutions",
-                        "Values quality and design",
-                        "Seeks authentic brands",
-                    ],
-                    motivations=[
-                        "Stay ahead of trends",
-                        "Express personal style",
-                        "Improve daily life",
-                    ],
-                    product_usage_context=f"Would use {product_name} in {theme} settings",
-                ),
-                CustomerPersona(
-                    name=f"Persona 2 for {product_name}",
-                    age_range="35-50",
-                    description=f"Professional seeking premium {product_category}",
-                    pain_points=[
-                        "Limited time for research",
-                        "Wants reliable performance",
-                        "Values brand reputation",
-                    ],
-                    motivations=[
-                        "Quality investment",
-                        "Status and recognition",
-                        "Functional excellence",
-                    ],
-                    product_usage_context=f"Integrates {product_name} into professional lifestyle",
-                ),
-                CustomerPersona(
-                    name=f"Persona 3 for {product_name}",
-                    age_range="18-28",
-                    description=f"Trend-conscious {product_category} enthusiast",
-                    pain_points=[
-                        "Budget constraints",
-                        "Wants social validation",
-                        "Seeks unique experiences",
-                    ],
-                    motivations=[
-                        "Social media presence",
-                        "Personal expression",
-                        "Community belonging",
-                    ],
-                    product_usage_context=f"Uses {product_name} for social and recreational activities",
-                ),
-            ],
-            slogans=[
-                f"{product_name}: {theme} Redefined",
-                f"Experience the Future of {product_category.title()}",
-                f"Where {theme.title()} Meets Innovation",
-                f"Elevate Your {product_category.title()} Game",
-                f"The {brand_tone.title()} Choice for Modern Living",
-            ],
-            market_analysis=f"The {product_category} market is experiencing significant growth driven by consumer demand for innovation and quality. {product_name} is positioned in the {theme} segment, appealing to {target_market}. Key differentiators include {', '.join(key_features[:2])}.",
-            visual_theme_extracted=visual_analysis[:200],
-            category_insights=f"The {product_category} category shows strong trends toward {theme} aesthetics and {brand_tone} brand positioning. Consumer preferences favor products that deliver on {', '.join(key_features[:2])}.",
+            personas=personas,
+            slogans=slogans,
+            market_analysis=market_analysis,
+            visual_theme_extracted=visual_theme_extracted,
+            category_insights=category_insights,
         )
 
         return output

@@ -230,8 +230,53 @@ async def broadcast_to_frontend(message_type: str, data: Dict[str, Any], fronten
                 "type": message_type,
                 "data": data
             }
-            await frontend_ws.send_text(json.dumps(message))
-            logger.info(f"[WebSocket] ✓ Broadcasted {message_type}: {truncate_for_logging(data)}")
+            # Debug logging for asset_added
+            if message_type == "asset_added" and "asset_data" in data:
+                asset_data = data.get("asset_data", {})
+                logger.info(f"[WebSocket] DEBUG asset_added: agent_id={data.get('agent_id')}, asset_type={data.get('asset_type')}")
+                logger.info(f"[WebSocket] DEBUG asset_data keys: {list(asset_data.keys()) if isinstance(asset_data, dict) else 'not a dict'}")
+                if isinstance(asset_data, dict) and "images" in asset_data:
+                    images = asset_data.get("images", [])
+                    logger.info(f"[WebSocket] DEBUG images count: {len(images) if isinstance(images, list) else 'not a list'}")
+                    if isinstance(images, list) and len(images) > 0:
+                        first_image = images[0]
+                        url = first_image.get('url', '') if isinstance(first_image, dict) else ''
+                        logger.info(f"[WebSocket] DEBUG first image url length: {len(url)}")
+
+                        # Validate data URI format
+                        if url.startswith('data:image'):
+                            parts = url.split(',', 1)
+                            if len(parts) == 2:
+                                header, b64_data = parts
+                                logger.info(f"[WebSocket] DEBUG first image - header: {header}, base64 length: {len(b64_data)}")
+                            else:
+                                logger.error(f"[WebSocket] ERROR first image has invalid data URI format (no comma separator)")
+                        else:
+                            logger.warning(f"[WebSocket] WARNING first image URL doesn't start with 'data:image': {url[:100]}")
+
+            # Serialize message and check size
+            message_json = json.dumps(message)
+            message_size_kb = len(message_json) / 1024
+            logger.info(f"[WebSocket] Sending {message_type}, size: {message_size_kb:.1f}KB")
+
+            # Check for truncation - compare before and after serialization
+            if message_type == "asset_added" and "asset_data" in data:
+                asset_data = data.get("asset_data", {})
+                if isinstance(asset_data, dict) and "images" in asset_data:
+                    images = asset_data.get("images", [])
+                    if isinstance(images, list) and len(images) > 0:
+                        # Re-parse to check for truncation
+                        reparsed = json.loads(message_json)
+                        reparsed_url = reparsed.get("data", {}).get("asset_data", {}).get("images", [{}])[0].get("url", "")
+                        original_url = images[0].get("url", "") if isinstance(images[0], dict) else ""
+
+                        if len(reparsed_url) != len(original_url):
+                            logger.error(f"[WebSocket] TRUNCATION DETECTED! Original: {len(original_url)}, After JSON: {len(reparsed_url)}")
+                        else:
+                            logger.info(f"[WebSocket] No truncation - URL size preserved: {len(original_url)} chars")
+
+            await frontend_ws.send_text(message_json)
+            logger.info(f"[WebSocket] ✓ Broadcasted {message_type}")
         except Exception as e:
             logger.error(f"[WebSocket] ✗ Failed to broadcast {message_type}: {e}", exc_info=True)
     else:
@@ -247,10 +292,14 @@ async def send_announcement(message: str, announcement_type: str = "info") -> No
         announcement_type: Type of announcement (info, success, error, warning)
     """
     logger.info(f"[Announcement] Sending to frontend: {message} (type: {announcement_type})")
+
+    # Get frontend_ws from tool context
+    frontend_ws = getattr(update_project_brief, '_frontend_ws', None)
+
     await broadcast_to_frontend("producer_announcement", {
         "message": message,
         "announcement_type": announcement_type
-    })
+    }, frontend_ws=frontend_ws)
 
 
 async def send_agent_status(agent_id: str, status: str, current_task: str = "") -> None:
@@ -262,11 +311,40 @@ async def send_agent_status(agent_id: str, status: str, current_task: str = "") 
         status: Agent status (working, completed, failed)
         current_task: Description of current task
     """
+    # Get frontend_ws from tool context
+    frontend_ws = getattr(update_project_brief, '_frontend_ws', None)
+
     await broadcast_to_frontend("agent_status", {
         "agent_id": agent_id,
         "status": status,
         "current_task": current_task
-    })
+    }, frontend_ws=frontend_ws)
+
+
+async def add_memory_summary(session: Any, summary: str) -> None:
+    """
+    Add a text summary to the session for Memory Bank persistence.
+
+    Memory Bank only stores conversational content (text), not function calls.
+    This helper adds structured data as text so it can be retrieved later.
+
+    Args:
+        session: ADK Session object
+        summary: Text summary to add to conversation history
+    """
+    try:
+        from google.genai.types import Content, Part
+
+        # Add as an assistant message (system context)
+        session.add_event(
+            Content(
+                role='model',
+                parts=[Part(text=f"[MEMORY SUMMARY] {summary}")]
+            )
+        )
+        logger.info(f"[Memory] Added summary to session: {summary[:100]}...")
+    except Exception as e:
+        logger.error(f"[Memory] Failed to add summary: {e}")
 
 
 async def send_asset_added(agent_id: str, asset_type: str, asset_data: Dict[str, Any]) -> None:
@@ -281,11 +359,41 @@ async def send_asset_added(agent_id: str, asset_type: str, asset_data: Dict[str,
     logger.info(f"[ASSET] Sending asset_added: agent={agent_id}, type={asset_type}")
     logger.info(f"[ASSET] Asset data keys: {list(asset_data.keys()) if isinstance(asset_data, dict) else 'not a dict'}")
 
+    # Debug: Check image URLs
+    if isinstance(asset_data, dict) and "images" in asset_data:
+        images = asset_data.get("images", [])
+        if isinstance(images, list) and len(images) > 0:
+            first_img = images[0]
+            if isinstance(first_img, dict):
+                url = first_img.get("url", "")
+                logger.info(f"[ASSET] First image URL type: {type(url)}, length: {len(url) if isinstance(url, str) else 'N/A'}")
+                if isinstance(url, str):
+                    if url.startswith("data:image"):
+                        # Check if it's a valid data URI
+                        parts = url.split(',', 1)
+                        logger.info(f"[ASSET] Data URI parts count: {len(parts)}")
+                        if len(parts) == 2:
+                            header, b64_data = parts
+                            logger.info(f"[ASSET] Data URI header: {header}, base64 length: {len(b64_data)}")
+                            # Check if base64 contains any commas (it shouldn't!)
+                            comma_count = b64_data.count(',')
+                            if comma_count > 0:
+                                logger.error(f"[ASSET] ERROR: Base64 data contains {comma_count} commas! Data is corrupted!")
+                        else:
+                            logger.error(f"[ASSET] ERROR: Invalid data URI format - found {len(parts)} parts when splitting by comma")
+                    else:
+                        logger.warning(f"[ASSET] WARNING: URL doesn't start with 'data:image': {url[:100]}")
+            else:
+                logger.error(f"[ASSET] ERROR: First image is not a dict: {type(first_img)}")
+
+    # Get frontend_ws from tool context
+    frontend_ws = getattr(update_project_brief, '_frontend_ws', None)
+
     await broadcast_to_frontend("asset_added", {
         "agent_id": agent_id,
         "asset_type": asset_type,
         "asset_data": asset_data
-    })
+    }, frontend_ws=frontend_ws)
 
 
 # ============================================================================
@@ -508,9 +616,17 @@ async def generate_hero_images(
 
         # Fetch project brief and fill in missing parameters
         brief = await redis_client.get_project_brief(project_id)
+        reference_images = []
+
         if brief:
-            if not slogan:
-                slogan = brief.selected_slogan or ""
+            # ALWAYS use selected_slogan from brief if it exists (user's explicit choice)
+            # This prevents Memory Bank from polluting the slogan with old campaigns
+            if brief.selected_slogan:
+                slogan = brief.selected_slogan
+                logger.info(f"[TOOL] Using selected_slogan from brief (overriding parameter): {slogan}")
+            elif not slogan:
+                slogan = ""
+
             if not product_name:
                 product_name = brief.product_name
             if not product_category:
@@ -521,7 +637,14 @@ async def generate_hero_images(
                 brand_tone = brief.brand_tone
             if not key_features:
                 key_features = brief.key_features
-            logger.info(f"[TOOL] Filled missing params from brief: slogan={slogan[:30] if slogan else 'none'}, product={product_name}")
+
+            # Get reference images from brief
+            reference_images = brief.reference_images or []
+
+            logger.info(
+                f"[TOOL] Filled params from brief: slogan={slogan[:30] if slogan else 'none'}, "
+                f"product={product_name}, reference_images={len(reference_images)}"
+            )
 
         task = {
             "task_id": "art_director",
@@ -531,6 +654,7 @@ async def generate_hero_images(
             "theme": theme,
             "brand_tone": brand_tone,
             "key_features": key_features or [],
+            "reference_images": [img.model_dump() for img in reference_images] if reference_images else [],
         }
 
         # Send agent status update: thinking
@@ -552,13 +676,25 @@ async def generate_hero_images(
         if "images" in result:
             await send_asset_added("art_director", "images", result)
 
-        # Extract images from result to present to Gemini
+        # Extract images from result
         images = result.get("images", [])
+
+        # Create lightweight summary for Gemini (no base64 data to avoid 100KB limit)
+        # The full images with base64 are already sent to frontend via send_asset_added
+        image_summaries = [
+            {
+                "description": img.get("description", ""),
+                "variation": img.get("generation_params", {}).get("variation", i+1),
+                "score": img.get("generation_params", {}).get("score", 0.0),
+                "approved": img.get("generation_params", {}).get("approved", False),
+            }
+            for i, img in enumerate(images)
+        ]
 
         tool_result = {
             "success": True,
-            "message": f"Art Director generated {len(images)} hero images. Describe each image to the user.",
-            "images": images
+            "message": f"Art Director generated {len(images)} hero images. They have been displayed to the user. Describe each variation briefly.",
+            "image_summaries": image_summaries
         }
 
         # Validate before returning to prevent WebSocket 1007 errors
@@ -1768,6 +1904,46 @@ class GeminiLiveADKConnection:
                                         if hasattr(e, 'content') and e.content is not None
                                     )
                                     logger.info(f"[Memory Bank] Events with content: {events_with_content}/{event_count}")
+
+                                    # ============================================================
+                                    # INJECT PROJECT STATE SUMMARY FOR MEMORY BANK
+                                    # ============================================================
+                                    # Memory Bank filters out function calls/responses, so inject
+                                    # project data as text content for semantic retrieval
+                                    try:
+                                        brief = await redis_client.get_project_brief(self.project_id)
+                                        if brief:
+                                            summary_parts = [
+                                                f"[PROJECT STATE SNAPSHOT]",
+                                                f"Product: {brief.product_name or 'Not set'}",
+                                                f"Category: {brief.product_category or 'Not set'}",
+                                                f"Theme: {brief.theme or 'Not set'}",
+                                                f"Brand Tone: {brief.brand_tone or 'Not set'}",
+                                                f"Target Market: {brief.target_market or 'Not set'}",
+                                            ]
+
+                                            if brief.key_features:
+                                                summary_parts.append(f"Key Features: {', '.join(brief.key_features)}")
+
+                                            if brief.selected_slogan:
+                                                summary_parts.append(f"Selected Slogan: \"{brief.selected_slogan}\"")
+
+                                            if brief.selected_image:
+                                                summary_parts.append(f"Hero Image: Selected (variation {brief.selected_image.generation_params.get('variation', 'unknown')})")
+
+                                            summary = "\n".join(summary_parts)
+
+                                            # Add summary as model content to session
+                                            from google.genai.types import Content, Part
+                                            latest_session.add_event(
+                                                Content(
+                                                    role='model',
+                                                    parts=[Part(text=summary)]
+                                                )
+                                            )
+                                            logger.info(f"[Memory Bank] ✓ Injected project state summary into session")
+                                    except Exception as e:
+                                        logger.warning(f"[Memory Bank] Failed to inject project summary: {e}")
 
                                     # Persist to Memory Bank
                                     success = await memory_service.add_session_to_memory(

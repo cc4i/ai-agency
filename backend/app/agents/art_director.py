@@ -1,7 +1,8 @@
 """Art Director Agent - Hero image generation.
 
-Uses Imagen to generate photorealistic product images.
+Uses Gemini 2.5 Flash Image with ADK multi-agent workflow.
 Product-agnostic with category-specific visual guidelines.
+Parallel generation with built-in quality validation and retry logic.
 """
 
 import logging
@@ -10,7 +11,6 @@ from typing import Any, Dict
 
 from app.agents.base import AgentBase
 from app.models.assets import ArtDirectorOutput, CritiqueResult, ImageAsset
-from app.services.google_ai_client import imagen_client
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,11 @@ class ArtDirectorAgent(AgentBase):
     """
     Art Director Agent generates hero images for campaigns.
 
-    Generates exactly 4 photorealistic images using Imagen.
+    Uses ADK multi-agent workflow with:
+    - ParallelAgent: Runs 4 image variations simultaneously (4x faster)
+    - LoopAgent: Each variation has built-in quality validation and retry (max 3 attempts)
+    - Gemini 2.5 Flash Image: Supports reference images for style matching
+
     Adapts visual style based on product category and brand tone.
     """
 
@@ -43,16 +47,22 @@ class ArtDirectorAgent(AgentBase):
         self, task: Dict[str, Any], context: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        Execute hero image generation.
+        Execute hero image generation using ADK multi-agent workflow.
+
+        Uses ParallelAgent + LoopAgent for:
+        - 4x faster generation (parallel execution)
+        - Automatic quality validation
+        - Built-in retry logic (max 3 attempts per image)
+        - Reference image support for style matching
 
         Args:
-            task: Contains slogan, theme, product info, category, brand_tone
+            task: Contains slogan, theme, product info, category, brand_tone, reference_images
             context: Shared project context
 
         Returns:
             ArtDirectorOutput with 4 images and style guide
         """
-        logger.info(f"Art Director executing for: {task.get('product_name')}")
+        logger.info(f"Art Director executing for: {task.get('product_name')} (ADK workflow)")
 
         slogan = task.get("slogan", "")
         theme = task.get("theme", "modern")
@@ -68,21 +78,26 @@ class ArtDirectorAgent(AgentBase):
             "Professional product photography with clean composition",
         )
 
-        # Generate 4 image variations
-        images = []
-        for i in range(4):
-            image = await self._generate_image(
-                slogan=slogan,
-                theme=theme,
-                product_name=product_name,
-                product_category=product_category,
-                brand_tone=brand_tone,
-                key_features=key_features,
-                visual_guidelines=visual_guidelines,
-                variation=i + 1,
-                reference_images=reference_images,
-            )
-            images.append(image)
+        # Execute ADK workflow (parallel generation with quality validation)
+        from app.workflows.art_director_workflow import ArtDirectorWorkflow
+
+        workflow = ArtDirectorWorkflow()
+
+        logger.info(f"Art Director: Starting ADK workflow with {len(reference_images)} reference images")
+
+        # Execute workflow - returns list of ImageAsset dicts
+        image_dicts = await workflow.execute(
+            slogan=slogan,
+            product_name=product_name,
+            product_category=product_category,
+            theme=theme,
+            brand_tone=brand_tone,
+            key_features=key_features,
+            reference_images=reference_images,
+        )
+
+        # Convert dicts back to ImageAsset objects
+        images = [ImageAsset(**img_dict) for img_dict in image_dicts]
 
         # Create style guide
         style_guide = self._create_style_guide(
@@ -91,128 +106,9 @@ class ArtDirectorAgent(AgentBase):
 
         output = ArtDirectorOutput(images=images, style_guide=style_guide)
 
-        logger.info(f"Art Director completed: {len(images)} images generated")
+        logger.info(f"Art Director completed: {len(images)} images generated via ADK workflow")
 
         return output.model_dump()
-
-    async def _generate_image(
-        self,
-        slogan: str,
-        theme: str,
-        product_name: str,
-        product_category: str,
-        brand_tone: str,
-        key_features: list,
-        visual_guidelines: str,
-        variation: int,
-        reference_images: list = [],
-    ) -> ImageAsset:
-        """
-        Generate a single hero image.
-
-        Args:
-            slogan: Campaign slogan
-            theme: Visual theme
-            product_name: Product name
-            product_category: Product category
-            brand_tone: Brand tone (futuristic, luxury, etc.)
-            key_features: Product features to highlight
-            visual_guidelines: Category-specific guidelines
-            variation: Image variation number (1-4)
-
-        Returns:
-            ImageAsset with generated image
-        """
-        # Build reference style guidance if reference images provided
-        reference_guidance = ""
-        if reference_images:
-            reference_count = len(reference_images)
-            reference_descriptions = []
-            for i, img in enumerate(reference_images[:3], 1):  # Max 3 references in prompt
-                desc = img.get('description', f'Reference {i}')
-                reference_descriptions.append(f"- Reference {i}: {desc}")
-
-            reference_guidance = f"""
-REFERENCE STYLE GUIDANCE:
-The user has provided {reference_count} reference image(s) to guide the visual style.
-Match the overall aesthetic, composition style, lighting quality, and color palette of these references.
-{chr(10).join(reference_descriptions)}
-
-Use these references as inspiration for:
-- Visual composition and framing
-- Lighting mood and quality
-- Color grading and palette
-- Overall artistic direction
-"""
-
-        # Build comprehensive prompt
-        prompt = f"""
-        Create a stunning photorealistic hero image for a {product_category} campaign.
-
-        PRODUCT: {product_name}
-        SLOGAN: "{slogan}"
-        THEME: {theme}
-        BRAND TONE: {brand_tone}
-        KEY FEATURES TO HIGHLIGHT: {', '.join(key_features[:3])}
-        {reference_guidance}
-        VISUAL STYLE:
-        {visual_guidelines}
-
-        COMPOSITION GUIDELINES:
-        - Product should be the focal point
-        - {theme} aesthetic with {brand_tone} feel
-        - Professional {product_category}-appropriate lighting
-        - High-quality, magazine-worthy composition
-        - Variation {variation}: {"Hero shot with dramatic lighting" if variation == 1 else "Lifestyle context" if variation == 2 else "Close-up detail shot" if variation == 3 else "Environmental/action shot"}
-
-        TECHNICAL SPECS:
-        - Photorealistic quality
-        - 16:9 aspect ratio
-        - Sharp focus on product
-        - Professional color grading
-        - {brand_tone} color palette
-        """
-
-        generation_params = {
-            "prompt": prompt,
-            "aspect_ratio": "16:9",
-            "variation": variation,
-            "theme": theme,
-            "brand_tone": brand_tone,
-        }
-
-        # Generate image using Imagen
-        image_data_list = await imagen_client.generate_images(
-            prompt=prompt,
-            number_of_images=1,
-            aspect_ratio="16:9",
-        )
-
-        # Convert image bytes to base64 data URI for display
-        import base64
-        asset_id = f"img_{uuid.uuid4().hex[:12]}"
-
-        if image_data_list and len(image_data_list) > 0:
-            image_bytes = image_data_list[0]
-            # Convert to base64 data URI
-            base64_data = base64.b64encode(image_bytes).decode('utf-8')
-            image_url = f"data:image/png;base64,{base64_data}"
-            logger.info(f"Converted image to data URI (length: {len(image_url)})")
-        else:
-            # Fallback if no image generated
-            logger.warning(f"No image generated for variation {variation}, using placeholder")
-            image_url = "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iODAwIiBoZWlnaHQ9IjQ1MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iODAwIiBoZWlnaHQ9IjQ1MCIgZmlsbD0iIzMzMyIvPjx0ZXh0IHg9IjUwJSIgeT0iNTAlIiBmb250LXNpemU9IjI0IiBmaWxsPSIjYWFhIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkb21pbmFudC1iYXNlbGluZT0ibWlkZGxlIj5JbWFnZSBOb3QgR2VuZXJhdGVkPC90ZXh0Pjwvc3ZnPg=="
-
-        image_asset = ImageAsset(
-            asset_id=asset_id,
-            url=image_url,  # Now a real base64 data URI!
-            generation_params=generation_params,
-            description=f"{product_name} hero image - {theme} theme, variation {variation}",
-        )
-
-        logger.debug(f"Generated image {variation}: {asset_id}")
-
-        return image_asset
 
     def _create_style_guide(
         self,

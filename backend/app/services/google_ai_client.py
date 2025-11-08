@@ -227,7 +227,7 @@ class GeminiProClient:
         self.model_name = "gemini-2.5-flash"
 
     async def generate_content(
-        self, prompt: str, system_prompt: Optional[str] = None
+        self, prompt: str, system_prompt: Optional[str] = None, json_mode: bool = False
     ) -> str:
         """
         Generate text content using Gemini Pro.
@@ -235,6 +235,7 @@ class GeminiProClient:
         Args:
             prompt: User prompt
             system_prompt: Optional system instructions
+            json_mode: If True, forces Gemini to return valid JSON
 
         Returns:
             Generated text
@@ -243,34 +244,51 @@ class GeminiProClient:
             if not self.client:
                 raise RuntimeError("GenAI client not initialized")
 
-            logger.info(f"Gemini Pro: Generating content for prompt: {prompt[:50]}...")
+            logger.info(f"Gemini Pro: Generating content for prompt: {prompt[:50]}... (JSON mode: {json_mode})")
 
-            # Build config
-            config = {
+            # Build config using GenerateContentConfig
+            from google.genai import types
+
+            config_params = {
                 'temperature': 0.7,
                 'top_p': 0.95,
                 'top_k': 40,
-                'max_output_tokens': 2048,
+                'max_output_tokens': 8192,  # Increased for complex JSON responses
             }
 
-            # Build contents with system instruction if provided
-            contents = prompt
+            # Enable JSON mode if requested
+            if json_mode:
+                config_params['response_mime_type'] = 'application/json'
+                logger.info("JSON mode enabled: response_mime_type=application/json")
+
+            # Add system instruction if provided
             if system_prompt:
-                config['system_instruction'] = system_prompt
+                config_params['system_instruction'] = system_prompt
+
+            config = types.GenerateContentConfig(**config_params)
 
             # Generate content using new SDK
             response = await self.client.aio.models.generate_content(
                 model=self.model_name,
-                contents=contents,
+                contents=prompt,
                 config=config
             )
 
-            result = response.text
+            # Check if response has text
+            result = response.text if response.text else None
+
+            if result is None:
+                # Log response details for debugging
+                logger.error(f"Gemini Pro returned None text. Response: {response}")
+                logger.error(f"Response candidates: {response.candidates if hasattr(response, 'candidates') else 'N/A'}")
+                logger.error(f"Prompt finish reason: {response.candidates[0].finish_reason if hasattr(response, 'candidates') and response.candidates else 'N/A'}")
+                raise ValueError("Gemini Pro returned empty response")
+
             logger.info(f"Gemini Pro: Generated {len(result)} characters")
             return result
 
         except Exception as e:
-            logger.error(f"Gemini Pro error: {e}")
+            logger.error(f"Gemini Pro error: {e}", exc_info=True)
             raise
 
 

@@ -116,7 +116,11 @@ function ArtDirectorAssets({ data, sendMessage }: ArtDirectorAssetsProps) {
           selected_image_url: image.url,
         },
       });
-      console.log('[AssetDisplay] Sent image selection to backend:', image.url);
+      // Don't log full base64 data URL - just show size
+      const dataSizeKB = image.url?.startsWith('data:')
+        ? Math.round(image.url.length / 1024)
+        : null;
+      console.log('[AssetDisplay] Sent image selection to backend, size:', dataSizeKB ? `${dataSizeKB}KB` : 'N/A');
     }
   };
 

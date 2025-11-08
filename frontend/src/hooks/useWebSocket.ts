@@ -129,11 +129,48 @@ export function useWebSocket(
             break;
 
           case 'asset_added':
+            // Log asset metadata without full base64 data
+            const imageUrlInfo = message.data.asset_data?.images?.[0]?.url;
+            const dataSizeKB = imageUrlInfo ? Math.round(imageUrlInfo.length / 1024) : null;
+
+            // Validate data URI format
+            let validationStatus = 'unknown';
+            if (imageUrlInfo) {
+              if (imageUrlInfo.startsWith('data:image')) {
+                const parts = imageUrlInfo.split(',');
+                if (parts.length === 2) {
+                  const [header, b64Data] = parts;
+                  validationStatus = `valid - header: ${header}, data: ${b64Data.length} chars`;
+
+                  // Test base64 validity (first 100 chars)
+                  try {
+                    atob(b64Data.substring(0, 100));
+                    validationStatus += ', base64 OK';
+                  } catch (e) {
+                    validationStatus += `, base64 INVALID: ${e}`;
+                  }
+                } else {
+                  validationStatus = `invalid - ${parts.length} parts (expected 2)`;
+                }
+              } else {
+                validationStatus = `not a data URI`;
+              }
+            }
+
+            console.log('[WebSocket] asset_added received:', {
+              agent_id: message.data.agent_id,
+              asset_type: message.data.asset_type,
+              asset_data_keys: message.data.asset_data ? Object.keys(message.data.asset_data) : 'null',
+              first_image_size_kb: dataSizeKB,
+              first_image_validation: validationStatus,
+              image_count: message.data.asset_data?.images?.length || 0,
+            });
             addAsset(message.data.agent_id, {
               type: message.data.asset_type,
               data: message.data.asset_data,
               created_at: new Date().toISOString(),
             });
+            console.log('[WebSocket] asset_added stored in state');
             break;
 
           case 'agent_status':
@@ -173,7 +210,17 @@ export function useWebSocket(
             break;
 
           default:
-            console.log('Unknown message type:', message.type, message);
+            // Log unknown messages but sanitize base64 data
+            const sanitizedMessage = JSON.parse(JSON.stringify(message));
+            if (sanitizedMessage.data?.asset_data?.images) {
+              sanitizedMessage.data.asset_data.images = sanitizedMessage.data.asset_data.images.map((img: any) => ({
+                ...img,
+                url: img.url?.startsWith('data:')
+                  ? `[base64 data - ${Math.round(img.url.length / 1024)}KB]`
+                  : img.url
+              }));
+            }
+            console.log('Unknown message type:', message.type, sanitizedMessage);
         }
       } catch (error) {
         console.error('Error handling WebSocket message:', error);
