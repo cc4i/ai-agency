@@ -317,6 +317,14 @@ OUTPUT: Write ONLY the prompt text, no explanations or metadata."""
         logger.info("ArtDirectorWorkflow: Parallel execution completed")
 
         # Convert results to ImageAsset format
+        # Variation descriptions for display
+        variation_descriptions = [
+            "Hero shot with dramatic lighting and bold composition",
+            "Lifestyle context showing product in real-world use",
+            "Close-up detail shot highlighting key features and textures",
+            "Environmental/action shot demonstrating product benefits"
+        ]
+
         images = []
         for i, result in enumerate(results, 1):
             if isinstance(result, Exception):
@@ -339,10 +347,14 @@ OUTPUT: Write ONLY the prompt text, no explanations or metadata."""
 
             image_url = f"data:image/png;base64,{b64_data}"
 
+            # Use descriptive variation focus as description with product name and variation number
+            base_description = variation_descriptions[i-1] if i <= len(variation_descriptions) else "Image variation"
+            description = f"{product_name} - {base_description} - Variation {i}"
+
             asset = ImageAsset(
                 asset_id=f"img_{uuid.uuid4().hex[:12]}",
                 url=image_url,
-                description=f"{product_name} - Variation {i}",
+                description=description,
                 generation_params={
                     "model": "gemini-2.5-flash-image",
                     "variation": i,
