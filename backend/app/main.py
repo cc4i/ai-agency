@@ -124,52 +124,6 @@ async def get_models_and_voices():
     }
 
 
-@app.websocket("/ws/{session_id}/{project_id}")
-async def gemini_live_websocket(websocket: WebSocket, session_id: str, project_id: str):
-    """
-    WebSocket endpoint for Gemini Live streaming conversation (Manual Implementation).
-
-    This endpoint handles:
-    - Bidirectional audio streaming (user <-> Gemini Live)
-    - Text transcript streaming (simultaneous with audio)
-    - Project brief updates
-    - Agent status updates
-    - Asset delivery events
-
-    Args:
-        websocket: FastAPI WebSocket connection
-        session_id: Unique session identifier
-        project_id: Project identifier
-    """
-    from app.services.gemini_live import GeminiLiveConnection
-
-    logger.info(f"[Manual] WebSocket connection request for session: {session_id}, project: {project_id}")
-
-    # Create Gemini Live connection
-    # Available voices: Puck, Charon (male), Kore, Aoede (female), Fenrir
-    gemini_connection = GeminiLiveConnection(
-        session_id=session_id,
-        project_id=project_id,  # Pass project_id for agent integration
-        voice_name="Kore"  # Female voice (alternative: "Aoede")
-    )
-
-    try:
-        # Establish connection: Frontend → Backend → Gemini Live
-        await gemini_connection.connect(websocket)
-
-    except WebSocketDisconnect:
-        logger.info(f"[Manual] WebSocket disconnected for session: {session_id}")
-    except Exception as e:
-        logger.error(f"[Manual] WebSocket error for session {session_id}: {e}")
-        try:
-            await websocket.close(code=1011, reason=f"Connection error: {str(e)}")
-        except:
-            pass
-    finally:
-        # Clean up
-        await gemini_connection.disconnect()
-
-
 @app.websocket("/ws/adk/{session_id}/{project_id}")
 async def gemini_live_adk_websocket(
     websocket: WebSocket,
