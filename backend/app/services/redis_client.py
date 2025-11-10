@@ -159,7 +159,9 @@ class RedisClient:
         # Fields that need JSON deserialization
         json_fields = [
             'key_features', 'personas', 'slogans', 'hero_images',
-            'selected_image', 'campaign_plan', 'completed_assets', 'reference_images'
+            'selected_image', 'campaign_plan', 'completed_assets', 'reference_images',
+            'image_refinement_history',  # Refinement tracking (within generation)
+            'generation_history'  # NEW: Production-level generation tracking
         ]
 
         parsed_data = {}
@@ -171,22 +173,25 @@ class RedisClient:
                         parsed_data[key] = json.loads(value)
                     else:
                         # Set defaults for required list fields
-                        if key in ['key_features', 'personas', 'slogans', 'hero_images', 'reference_images']:
+                        if key in ['key_features', 'personas', 'slogans', 'hero_images', 'reference_images', 'generation_history']:
                             parsed_data[key] = []
-                        elif key == 'completed_assets':
+                        elif key in ['completed_assets', 'image_refinement_history']:
                             parsed_data[key] = {}
                         else:
                             parsed_data[key] = None
                 except (json.JSONDecodeError, TypeError):
                     # Fallback to defaults on parse error
-                    if key in ['key_features', 'personas', 'slogans', 'hero_images', 'reference_images']:
+                    if key in ['key_features', 'personas', 'slogans', 'hero_images', 'reference_images', 'generation_history']:
                         parsed_data[key] = []
-                    elif key == 'completed_assets':
+                    elif key in ['completed_assets', 'image_refinement_history']:
                         parsed_data[key] = {}
                     else:
                         parsed_data[key] = None
             elif key == 'version':
                 # Convert version to int
+                parsed_data[key] = int(value) if value else 1
+            elif key == 'current_generation':
+                # Convert current_generation to int (default to 1)
                 parsed_data[key] = int(value) if value else 1
             elif key == 'plan_approved':
                 # Convert boolean

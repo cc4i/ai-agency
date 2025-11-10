@@ -104,6 +104,9 @@ function ArtDirectorAssets({ data, sendMessage }: ArtDirectorAssetsProps) {
   const latestAsset = data[data.length - 1];
   const assetData = latestAsset.data;
   const [selectedImage, setSelectedImage] = useState<number | null>(null);
+  const [showVersionHistory, setShowVersionHistory] = useState<{ [key: number]: boolean }>({});
+  // Track which version is displayed for each image position (default to current version)
+  const [displayedVersions, setDisplayedVersions] = useState<{ [key: number]: any }>({});
 
   const handleImageSelect = (index: number, image: any) => {
     setSelectedImage(index);
@@ -124,28 +127,149 @@ function ArtDirectorAssets({ data, sendMessage }: ArtDirectorAssetsProps) {
     }
   };
 
+  // Get refinement history for a specific image
+  const getVersionHistory = (image: any) => {
+    if (!assetData.refinement_history) return [];
+
+    // For refined images (refinement_iteration > 0), use parent_asset_id to look up history
+    // For original images (refinement_iteration === 0), use asset_id
+    const assetId = image.parent_asset_id || image.asset_id;
+    if (!assetId) return [];
+
+    const history = assetData.refinement_history[assetId];
+    if (!history) return [];
+
+    // Build version list: [original, v1, v2, v3, ...]
+    const versions = [];
+
+    // Find original (refinement_iteration === 0)
+    if (image.refinement_iteration === 0) {
+      versions.push({ version: 0, image, label: 'v0 (original)' });
+    } else {
+      // Original is in history.refinements
+      const original = history.refinements?.find((r: any) => r.refinement_iteration === 0);
+      if (original) {
+        versions.push({ version: 0, image: original, label: 'v0 (original)' });
+      }
+    }
+
+    // Add all refinements
+    history.refinements?.forEach((refinement: any) => {
+      if (refinement.refinement_iteration > 0) {
+        versions.push({
+          version: refinement.refinement_iteration,
+          image: refinement,
+          label: `v${refinement.refinement_iteration}`,
+          feedback: history.feedback_history?.[refinement.refinement_iteration - 1]
+        });
+      }
+    });
+
+    // Add current if it's a refinement
+    if (image.refinement_iteration > 0 && !versions.find(v => v.version === image.refinement_iteration)) {
+      versions.push({
+        version: image.refinement_iteration,
+        image,
+        label: `v${image.refinement_iteration} (current)`,
+        feedback: image.user_feedback_applied
+      });
+    }
+
+    return versions.sort((a, b) => a.version - b.version);
+  };
+
   return (
     <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-4">
       <h3 className="text-base font-semibold text-white mb-3 flex items-center gap-2">
         🎨 Hero Images
+        {assetData.current_generation && (
+          <span className="text-xs text-zinc-500">
+            Generation {assetData.current_generation}
+          </span>
+        )}
       </h3>
 
       <div className="grid grid-cols-2 gap-4">
-        {assetData.images?.map((image: any, i: number) => (
-          <div
-            key={i}
-            className={cn(
-              'cursor-pointer rounded-lg border-2 transition-all overflow-hidden',
-              selectedImage === i ? 'border-blue-500 ring-2 ring-blue-500/50' : 'border-zinc-700'
-            )}
-            onClick={() => handleImageSelect(i, image)}
-          >
-            <img src={image.url} alt={image.description || 'Hero image'} className="w-full aspect-video object-cover" />
-            <div className="p-3 bg-zinc-800">
-              <div className="text-xs text-zinc-400">{image.description || image.generation_params?.prompt || 'Hero image'}</div>
+        {assetData.images?.map((image: any, i: number) => {
+          const versionHistory = getVersionHistory(image);
+          const hasVersions = versionHistory.length > 1;
+
+          // Use displayed version if set, otherwise use default image
+          const displayedImage = displayedVersions[i] || image;
+          const displayedVersion = displayedImage.refinement_iteration || 0;
+
+          return (
+            <div key={i} className="relative">
+              <div
+                className={cn(
+                  'cursor-pointer rounded-lg border-2 transition-all overflow-hidden',
+                  selectedImage === i ? 'border-blue-500 ring-2 ring-blue-500/50' : 'border-zinc-700'
+                )}
+                onClick={() => handleImageSelect(i, displayedImage)}
+              >
+                <img src={displayedImage.url} alt={displayedImage.description || 'Hero image'} className="w-full aspect-video object-cover" />
+                <div className="p-3 bg-zinc-800">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="text-xs text-zinc-400 flex-1">
+                      {displayedImage.description || displayedImage.generation_params?.prompt || 'Hero image'}
+                    </div>
+                    {hasVersions && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setShowVersionHistory(prev => ({ ...prev, [i]: !prev[i] }));
+                        }}
+                        className="text-xs px-2 py-1 bg-zinc-700 hover:bg-zinc-600 rounded transition-colors text-white shrink-0"
+                      >
+                        v{displayedVersion} ▾
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Version History Dropdown */}
+              {showVersionHistory[i] && hasVersions && (
+                <div className="absolute top-full left-0 right-0 mt-2 bg-zinc-800 border border-zinc-700 rounded-lg shadow-xl z-10 overflow-hidden">
+                  <div className="p-2 border-b border-zinc-700 text-xs font-medium text-zinc-400">
+                    Version History
+                  </div>
+                  <div className="max-h-64 overflow-y-auto">
+                    {versionHistory.map((v) => (
+                      <div
+                        key={v.version}
+                        className={cn(
+                          'p-3 hover:bg-zinc-700 cursor-pointer transition-colors border-b border-zinc-700/50',
+                          v.version === displayedVersion && 'bg-zinc-700/50'
+                        )}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          // Swap to this version
+                          setDisplayedVersions(prev => ({ ...prev, [i]: v.image }));
+                          // Close dropdown
+                          setShowVersionHistory(prev => ({ ...prev, [i]: false }));
+                          console.log('Switched to version', v.version, 'for image', i);
+                        }}
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-sm font-medium text-white">{v.label}</span>
+                          {v.version === displayedVersion && (
+                            <span className="text-xs text-blue-400">Viewing</span>
+                          )}
+                        </div>
+                        {v.feedback && (
+                          <div className="text-xs text-zinc-400 italic">
+                            "{v.feedback}"
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

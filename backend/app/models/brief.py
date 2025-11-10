@@ -8,7 +8,9 @@ from pydantic import BaseModel
 from app.models.assets import (
     CampaignPlan,
     CustomerPersona,
+    GenerationSnapshot,
     ImageAsset,
+    ImageRefinementHistory,
 )
 
 
@@ -42,6 +44,13 @@ class ProjectBrief(BaseModel):
     # Art outputs
     hero_images: List[ImageAsset] = []
     selected_image: Optional[ImageAsset] = None
+
+    # Image refinement tracking (within current generation)
+    image_refinement_history: Dict[str, ImageRefinementHistory] = {}  # {image_asset_id: history}
+
+    # Generation tracking (NEW - production level)
+    current_generation: int = 1  # Which generation we're on (1, 2, 3...)
+    generation_history: List[GenerationSnapshot] = []  # Previous complete generations
 
     # Execution plan
     campaign_plan: Optional[CampaignPlan] = None

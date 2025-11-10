@@ -116,9 +116,12 @@ async def critique_image_tool(
     theme: str,
     brand_tone: str,
     product_category: str,
+    user_feedback: Optional[str] = None,  # NEW: For refinement validation
 ) -> Dict[str, Any]:
     """
     Validate generated image against quality rules using Gemini Pro Vision.
+
+    For refinements (when user_feedback is provided), validates that feedback was addressed.
 
     Args:
         image_b64: Base64-encoded generated image
@@ -126,6 +129,7 @@ async def critique_image_tool(
         theme: Brand theme
         brand_tone: Brand tone
         product_category: Product category
+        user_feedback: User's refinement feedback to validate (optional)
 
     Returns:
         {
@@ -133,14 +137,74 @@ async def critique_image_tool(
             "score": float,
             "issues": List[str],
             "strengths": List[str],
-            "recommendation": "APPROVE"|"REVISE"|"REJECT"
+            "recommendation": "APPROVE"|"REVISE"|"REJECT",
+            "feedback_addressed": bool (only if user_feedback provided)
         }
     """
     try:
-        logger.info(f"[CritiqueTool] Analyzing variation {variation}")
+        if user_feedback:
+            logger.info(f"[CritiqueTool] Analyzing refinement for variation {variation} (feedback: '{user_feedback}')")
+        else:
+            logger.info(f"[CritiqueTool] Analyzing variation {variation}")
 
-        # Build critique prompt
-        critique_prompt = f"""Analyze this AI-generated product image and validate quality.
+        # Build critique prompt (different for refinements vs. originals)
+        if user_feedback:
+            # REFINEMENT critique - validate feedback addressed
+            critique_prompt = f"""Analyze this REFINED AI-generated product image.
+
+🎯 CRITICAL: The user requested this refinement:
+"{user_feedback}"
+
+Your primary job: Verify this feedback was successfully addressed.
+
+EVALUATION CRITERIA:
+
+1. USER FEEDBACK ADDRESSED (50% weight - CRITICAL):
+   - Was the requested change implemented?
+   - Is it noticeable and effective?
+   - Did it achieve the user's intent?
+   - Examples:
+     * "add modern elements" → Should see modern UI, tech graphics, contemporary styling
+     * "make brighter" → Should have increased exposure/luminosity
+     * "dial back overlays" → Should see reduced intensity of overlay elements
+
+2. TECHNICAL QUALITY (25%):
+   - Sharpness and clarity maintained
+   - No artifacts or distortions
+   - Acceptable resolution
+
+3. CONSISTENCY (15%):
+   - Product still focal point
+   - Brand alignment: Theme={theme}, Tone={brand_tone}
+   - Category conventions: {product_category}
+
+4. OVERALL IMPROVEMENT (10%):
+   - Is this refinement an improvement over the original?
+   - Does it maintain what was good while implementing changes?
+
+SCORING (0.0-1.0):
+- 0.9-1.0: Feedback perfectly addressed, excellent refinement
+- 0.7-0.89: Feedback mostly addressed, good refinement
+- 0.5-0.69: Feedback partially addressed, needs more work
+- 0.0-0.49: Feedback not addressed, failed refinement
+
+IMPORTANT: Set approved=true ONLY if:
+- Score >= 0.7 AND
+- User feedback was substantially addressed
+
+Return ONLY valid JSON:
+{{
+    "approved": true or false,
+    "score": 0.0 to 1.0,
+    "issues": ["issue 1", "issue 2"],
+    "strengths": ["strength 1", "strength 2"],
+    "recommendation": "APPROVE" or "REVISE" or "REJECT",
+    "feedback_addressed": true or false
+}}
+"""
+        else:
+            # ORIGINAL critique - standard quality validation
+            critique_prompt = f"""Analyze this AI-generated product image and validate quality.
 
 EVALUATION CRITERIA:
 

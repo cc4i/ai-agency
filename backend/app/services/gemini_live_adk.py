@@ -321,6 +321,21 @@ async def send_agent_status(agent_id: str, status: str, current_task: str = "") 
     }, frontend_ws=frontend_ws)
 
 
+async def send_websocket_event(event_data: Dict[str, Any]) -> None:
+    """
+    Send a custom WebSocket event to the frontend.
+
+    Args:
+        event_data: Event payload containing 'type' and other fields
+    """
+    # Get frontend_ws from tool context
+    frontend_ws = getattr(update_project_brief, '_frontend_ws', None)
+
+    event_type = event_data.get("type", "custom_event")
+
+    await broadcast_to_frontend(event_type, event_data, frontend_ws=frontend_ws)
+
+
 def _format_strategy_summary(result: Dict[str, Any], product_name: str) -> str:
     """
     Format strategy agent results as searchable text for Memory Bank.
@@ -861,15 +876,113 @@ async def generate_hero_images(
             announcement_callback=send_announcement  # ← Pass callback for frontend updates
         )
 
+        # Extract images from result
+        images = result.get("images", [])
+
+        # VALIDATION: Ensure we got all 4 images when generating from scratch
+        # If this is the first generation (no existing hero_images), require all 4
+        if brief and (not brief.hero_images or len(brief.hero_images) == 0):
+            if len(images) < 4:
+                error_msg = f"Art Director only generated {len(images)}/4 images. All 4 variations are required for initial generation. Please try again."
+                logger.error(f"[TOOL] {error_msg}")
+                await send_agent_status("art_director", "error", "")
+                return validate_tool_result({
+                    "success": False,
+                    "error": "incomplete_generation",
+                    "message": error_msg,
+                    "images_generated": len(images)
+                })
+
         # Send agent status update: complete
         await send_agent_status("art_director", "complete", "")
 
-        # Broadcast asset if images were generated
-        if "images" in result:
-            await send_asset_added("art_director", "images", result)
+        # Save images to project brief in Redis so refinement tools can access them
+        if images:
+            from app.models.assets import ImageAsset, GenerationSnapshot
+            from datetime import datetime
 
-        # Extract images from result
-        images = result.get("images", [])
+            # Determine if this is a regeneration or initial generation
+            is_regeneration = brief and brief.hero_images and len(brief.hero_images) > 0
+            new_generation_number = brief.current_generation if brief else 1
+
+            if is_regeneration:
+                # PRODUCTION-LEVEL GENERATION TRACKING
+                # Save current generation to history before replacing
+                logger.info(f"[TOOL] Regeneration detected. Saving Generation {brief.current_generation} to history")
+
+                snapshot = GenerationSnapshot(
+                    generation_number=brief.current_generation,
+                    created_at=datetime.now(),
+                    images=brief.hero_images,
+                    theme=brief.theme,
+                    reason="regenerated" if brief.current_generation > 1 else "initial generation",
+                    slogan=brief.selected_slogan
+                )
+                brief.generation_history.append(snapshot)
+
+                # Increment generation number for new images
+                new_generation_number = brief.current_generation + 1
+                logger.info(f"[TOOL] Starting Generation {new_generation_number}")
+
+            # Create image assets with generation tracking metadata
+            image_assets = []
+            for i, img_dict in enumerate(images, 1):
+                # Add generation metadata to each image
+                img_dict['generation_number'] = new_generation_number
+                img_dict['variation_number'] = i
+                image_assets.append(ImageAsset(**img_dict))
+
+            # Build update dict
+            update_dict = {
+                "hero_images": image_assets,
+                "current_generation": new_generation_number,
+            }
+
+            # If regeneration, also update generation_history and clear refinement_history
+            if is_regeneration:
+                update_dict["generation_history"] = brief.generation_history
+                update_dict["image_refinement_history"] = {}  # Clear for new generation
+                logger.info(f"[TOOL] Cleared refinement history for Generation {new_generation_number}")
+            else:
+                # First generation, keep existing (empty) refinement_history
+                update_dict["image_refinement_history"] = brief.image_refinement_history if brief else {}
+
+            # Now save new images
+            updated_brief = await redis_client.update_project_brief(project_id, update_dict)
+            logger.info(f"[TOOL] Saved {len(images)} new hero images to project brief")
+
+            # Broadcast brief update to frontend
+            frontend_ws = getattr(generate_hero_images, '_frontend_ws', None)
+            if frontend_ws:
+                try:
+                    # Build changed fields list
+                    changed_fields = ["hero_images", "current_generation"]
+                    if is_regeneration:
+                        changed_fields.extend(["generation_history", "image_refinement_history"])
+
+                    await frontend_ws.send_text(json.dumps({
+                        "type": "brief_update",
+                        "data": {
+                            "brief": updated_brief.model_dump(mode="json"),
+                            "changed_fields": changed_fields
+                        }
+                    }))
+                    logger.info(f"[TOOL] Broadcasted brief_update (Generation {new_generation_number}) to frontend")
+                except Exception as e:
+                    logger.error(f"[TOOL] Failed to broadcast brief_update: {e}")
+
+        # Broadcast asset if images were generated (with generation metadata and refinement history)
+        if "images" in result:
+            await send_asset_added("art_director", "images", {
+                **result,
+                "current_generation": new_generation_number,
+                "is_regeneration": is_regeneration,
+                "generation_history": [snapshot.model_dump(mode="json") for snapshot in updated_brief.generation_history],
+                "refinement_history": {
+                    asset_id: history.model_dump()
+                    for asset_id, history in updated_brief.image_refinement_history.items()
+                }
+            })
 
         # Create lightweight summary for Gemini (no base64 data to avoid 100KB limit)
         # The full images with base64 are already sent to frontend via send_asset_added
@@ -1249,6 +1362,488 @@ async def generate_landing_page(
 
 
 # ============================================================================
+# IMAGE REFINEMENT TOOLS (NEW)
+# ============================================================================
+
+async def refine_hero_image(
+    variation_number: int,
+    feedback: str,
+) -> Dict[str, Any]:
+    """
+    Refine a specific hero image based on user feedback, creating a new version.
+
+    Use this when the user wants to improve or modify ONE specific image variation.
+    Creates a new version (v2, v3, etc.) while preserving the original.
+
+    The refinement process:
+    1. Analyzes user feedback to determine what to keep vs. change
+    2. Uses the original image as reference for consistency
+    3. Generates refined image maintaining brand alignment
+    4. Validates that feedback was addressed (quality score >= 0.7)
+    5. Returns new version with version history
+
+    Args:
+        variation_number: Which image variation to refine (1-4)
+        feedback: User's refinement request describing desired changes.
+                 Be specific about what they want modified.
+                 Examples: "add modern UI elements", "make it brighter",
+                          "dial back the holographic overlays"
+
+    Returns:
+        Success status and refined image details
+
+    Usage patterns:
+        - "Option 1 is nice, but add modern elements"
+          → refine_hero_image(variation_number=1, feedback="add modern elements")
+        - "Make option 2 brighter with more vibrant colors"
+          → refine_hero_image(variation_number=2, feedback="make brighter with vibrant colors")
+        - "Option 3 needs the background blurred"
+          → refine_hero_image(variation_number=3, feedback="blur the background")
+
+    Note: Max 5 refinement iterations per image. Returns error if limit exceeded.
+    """
+    try:
+        from app.workflows.art_director_workflow import ArtDirectorWorkflow
+
+        project_id = getattr(refine_hero_image, '_project_id', 'default')
+        logger.info(f"[TOOL] refine_hero_image called: variation={variation_number}, feedback='{feedback}'")
+
+        # Validate variation number
+        if variation_number < 1 or variation_number > 4:
+            return validate_tool_result({
+                "success": False,
+                "error": f"Invalid variation number: {variation_number}. Must be 1-4."
+            })
+
+        # Load project brief
+        brief = await redis_client.get_project_brief(project_id)
+        if not brief:
+            return validate_tool_result({
+                "success": False,
+                "error": "Project brief not found. Generate images first."
+            })
+
+        # Check if images exist
+        if not brief.hero_images or len(brief.hero_images) < variation_number:
+            return validate_tool_result({
+                "success": False,
+                "error": f"Image variation {variation_number} not found. Generate images first."
+            })
+
+        # Get current image
+        current_image = brief.hero_images[variation_number - 1]
+
+        # Check max iterations
+        if current_image.refinement_iteration >= 5:
+            return validate_tool_result({
+                "success": False,
+                "error": "Maximum refinement iterations (5) reached. Consider selecting existing version or generating new image."
+            })
+
+        # Send status update
+        await send_agent_status("art_director", "thinking", f"Refining image {variation_number}")
+        await send_announcement(
+            f"Art Director is refining Option {variation_number} with your feedback...",
+            "info"
+        )
+
+        # Call Art Director workflow
+        workflow = ArtDirectorWorkflow()
+
+        refined_image_dict = await workflow.refine_image(
+            original_image=current_image.model_dump(),
+            user_feedback=feedback,
+            product_context={
+                "product_name": brief.product_name,
+                "product_category": brief.product_category,
+                "theme": brief.theme,
+                "brand_tone": brief.brand_tone,
+                "key_features": brief.key_features,
+            }
+        )
+
+        # Convert dict back to ImageAsset
+        from app.models.assets import ImageAsset
+        refined_image = ImageAsset(**refined_image_dict)
+
+        # Update refinement history BEFORE replacing the image
+        # Get the original asset_id (use parent_asset_id if current is already refined, otherwise use asset_id)
+        original_id = current_image.parent_asset_id or current_image.asset_id
+
+        if original_id not in brief.image_refinement_history:
+            from app.models.assets import ImageRefinementHistory
+            brief.image_refinement_history[original_id] = ImageRefinementHistory(
+                original_asset_id=original_id,
+                refinements=[],
+                feedback_history=[],
+                iteration_count=0
+            )
+
+        # CRITICAL: Save the current/previous version to history BEFORE replacing it
+        # This ensures we can navigate back to v0, v1, etc.
+        brief.image_refinement_history[original_id].refinements.append(current_image)
+        brief.image_refinement_history[original_id].feedback_history.append(feedback)
+        brief.image_refinement_history[original_id].iteration_count += 1
+
+        # Now replace the image in hero_images with the refined version
+        brief.hero_images[variation_number - 1] = refined_image
+
+        # Save updated brief to Redis and get the saved version back
+        updated_brief = await redis_client.update_project_brief(
+            project_id,
+            {
+                "hero_images": brief.hero_images,
+                "image_refinement_history": brief.image_refinement_history
+            }
+        )
+
+        # Send status update
+        await send_agent_status("art_director", "complete", "")
+
+        # Broadcast updated brief to frontend (for Project Brief panel)
+        frontend_ws = getattr(refine_hero_image, '_frontend_ws', None)
+        if frontend_ws:
+            try:
+                await frontend_ws.send_text(json.dumps({
+                    "type": "brief_update",
+                    "data": {
+                        "brief": updated_brief.model_dump(mode="json"),
+                        "changed_fields": ["hero_images", "image_refinement_history"]
+                    }
+                }))
+                logger.info(f"[TOOL] Broadcasted brief_update with refined hero_images to frontend")
+            except Exception as e:
+                logger.error(f"[TOOL] Failed to broadcast brief_update: {e}")
+
+        # Broadcast asset_added to update Hero Images panel (with generation and refinement metadata)
+        await send_asset_added("art_director", "images", {
+            "images": [img.model_dump() for img in updated_brief.hero_images],
+            "current_generation": updated_brief.current_generation,
+            "generation_history": [snapshot.model_dump(mode="json") for snapshot in updated_brief.generation_history],
+            "refinement_history": {
+                asset_id: history.model_dump()
+                for asset_id, history in updated_brief.image_refinement_history.items()
+            }
+        })
+
+        # Broadcast refinement event
+        await send_websocket_event({
+            "type": "image_refined",
+            "variation_number": variation_number,
+            "refined_image": refined_image.model_dump(),
+            "version_number": refined_image.refinement_iteration,
+            "feedback": feedback,
+        })
+
+        return validate_tool_result({
+            "success": True,
+            "message": f"Image {variation_number} refined successfully (version {refined_image.refinement_iteration})",
+            "version_number": refined_image.refinement_iteration,
+            "feedback_applied": feedback,
+            "quality_score": refined_image.generation_params.get("score", 0.0),
+        })
+
+    except Exception as e:
+        logger.error(f"[TOOL] refine_hero_image failed: {e}", exc_info=True)
+        await send_agent_status("art_director", "error", "")
+        return validate_tool_result({
+            "success": False,
+            "error": str(e),
+            "message": f"Art Director encountered an error while refining: {str(e)}"
+        })
+
+
+async def refine_all_hero_images(
+    feedback: str,
+) -> Dict[str, Any]:
+    """
+    Refine ALL 4 hero images with the same feedback, processing in parallel.
+
+    Use this when the user wants to apply the same change to all image variations.
+    All 4 images are refined simultaneously for speed (~20 seconds total).
+
+    Args:
+        feedback: Global change to apply to all images.
+                 Examples: "make brighter", "increase color vibrancy",
+                          "add more energy", "reduce saturation"
+
+    Returns:
+        Success status and refined images summary
+
+    Usage patterns:
+        - "All images feel too dark"
+          → refine_all_hero_images(feedback="increase brightness")
+        - "Make them all more vibrant"
+          → refine_all_hero_images(feedback="increase color vibrancy")
+        - "All images need more energy"
+          → refine_all_hero_images(feedback="add more dynamic energy")
+    """
+    try:
+        from app.workflows.art_director_workflow import ArtDirectorWorkflow
+
+        project_id = getattr(refine_all_hero_images, '_project_id', 'default')
+        logger.info(f"[TOOL] refine_all_hero_images called: feedback='{feedback}'")
+
+        # Load project brief
+        brief = await redis_client.get_project_brief(project_id)
+        if not brief:
+            return validate_tool_result({
+                "success": False,
+                "error": "Project brief not found. Generate images first."
+            })
+
+        if not brief.hero_images or len(brief.hero_images) == 0:
+            return validate_tool_result({
+                "success": False,
+                "error": "No hero images found. Generate images first."
+            })
+
+        # Send status update
+        await send_agent_status("art_director", "thinking", "Refining all images")
+        await send_announcement(
+            "Art Director is refining all 4 variations with your feedback...",
+            "info"
+        )
+
+        # Call Art Director workflow
+        workflow = ArtDirectorWorkflow()
+
+        refined_images_dicts = await workflow.refine_all_images(
+            all_images=[img.model_dump() for img in brief.hero_images],
+            global_feedback=feedback,
+            product_context={
+                "product_name": brief.product_name,
+                "product_category": brief.product_category,
+                "theme": brief.theme,
+                "brand_tone": brief.brand_tone,
+                "key_features": brief.key_features,
+            }
+        )
+
+        # Convert dicts back to ImageAssets
+        from app.models.assets import ImageAsset, ImageRefinementHistory
+        refined_images = [ImageAsset(**img_dict) for img_dict in refined_images_dicts]
+
+        # Update refinement history for ALL images BEFORE replacing them
+        for i, (current_image, refined_image) in enumerate(zip(brief.hero_images, refined_images)):
+            # Get the original asset_id
+            original_id = current_image.parent_asset_id or current_image.asset_id
+
+            if original_id not in brief.image_refinement_history:
+                brief.image_refinement_history[original_id] = ImageRefinementHistory(
+                    original_asset_id=original_id,
+                    refinements=[],
+                    feedback_history=[],
+                    iteration_count=0
+                )
+
+            # Save the current/previous version to history BEFORE replacing it
+            brief.image_refinement_history[original_id].refinements.append(current_image)
+            brief.image_refinement_history[original_id].feedback_history.append(feedback)
+            brief.image_refinement_history[original_id].iteration_count += 1
+
+        # Update project brief in Redis (replace all images and update history)
+        updated_brief = await redis_client.update_project_brief(
+            project_id,
+            {
+                "hero_images": refined_images,
+                "image_refinement_history": brief.image_refinement_history
+            }
+        )
+
+        # Send status update
+        await send_agent_status("art_director", "complete", "")
+
+        # Broadcast updated brief to frontend (for Project Brief panel)
+        frontend_ws = getattr(refine_all_hero_images, '_frontend_ws', None)
+        if frontend_ws:
+            try:
+                await frontend_ws.send_text(json.dumps({
+                    "type": "brief_update",
+                    "data": {
+                        "brief": updated_brief.model_dump(mode="json"),
+                        "changed_fields": ["hero_images", "image_refinement_history"]
+                    }
+                }))
+                logger.info(f"[TOOL] Broadcasted brief_update with all refined hero_images to frontend")
+            except Exception as e:
+                logger.error(f"[TOOL] Failed to broadcast brief_update: {e}")
+
+        # Broadcast asset_added to update Hero Images panel (with generation and refinement metadata)
+        await send_asset_added("art_director", "images", {
+            "images": [img.model_dump() for img in refined_images],
+            "current_generation": updated_brief.current_generation,
+            "generation_history": [snapshot.model_dump(mode="json") for snapshot in updated_brief.generation_history],
+            "refinement_history": {
+                asset_id: history.model_dump()
+                for asset_id, history in updated_brief.image_refinement_history.items()
+            }
+        })
+
+        # Broadcast batch refinement event
+        await send_websocket_event({
+            "type": "all_images_refined",
+            "refined_images": [img.model_dump() for img in refined_images],
+            "feedback": feedback,
+        })
+
+        # Calculate average score
+        scores = [img.generation_params.get("score", 0.0) for img in refined_images]
+        avg_score = sum(scores) / len(scores) if scores else 0.0
+
+        return validate_tool_result({
+            "success": True,
+            "message": f"All {len(refined_images)} images refined successfully",
+            "feedback_applied": feedback,
+            "average_quality_score": avg_score,
+        })
+
+    except Exception as e:
+        logger.error(f"[TOOL] refine_all_hero_images failed: {e}", exc_info=True)
+        await send_agent_status("art_director", "error", "")
+        return validate_tool_result({
+            "success": False,
+            "error": str(e),
+            "message": f"Art Director encountered an error while refining: {str(e)}"
+        })
+
+
+async def select_image_version(
+    variation_number: int,
+    version_number: int,
+) -> Dict[str, Any]:
+    """
+    Select a specific version of an image from refinement history (rollback).
+
+    Use when the user wants to go back to a previous version of a refined image.
+    This restores an earlier version as the current version without regeneration.
+
+    Args:
+        variation_number: Which image variation (1-4)
+        version_number: Which version to restore (1=original, 2=v2, 3=v3, etc.)
+
+    Returns:
+        Success status and selected version details
+
+    Usage patterns:
+        - "Go back to version 2 of option 1"
+          → select_image_version(variation_number=1, version_number=2)
+        - "I prefer version 1 of option 3"
+          → select_image_version(variation_number=3, version_number=1)
+        - "Restore the original version of option 2"
+          → select_image_version(variation_number=2, version_number=1)
+    """
+    try:
+        project_id = getattr(select_image_version, '_project_id', 'default')
+        logger.info(f"[TOOL] select_image_version called: variation={variation_number}, version={version_number}")
+
+        # Load project brief
+        brief = await redis_client.get_project_brief(project_id)
+        if not brief:
+            return validate_tool_result({
+                "success": False,
+                "error": "Project brief not found."
+            })
+
+        # Validate variation number
+        if variation_number < 1 or variation_number > 4 or len(brief.hero_images) < variation_number:
+            return validate_tool_result({
+                "success": False,
+                "error": f"Invalid variation number: {variation_number}"
+            })
+
+        # Get current image
+        current_image = brief.hero_images[variation_number - 1]
+        original_id = current_image.asset_id if current_image.refinement_iteration == 0 else current_image.parent_asset_id
+
+        # Find the requested version
+        target_version = None
+
+        if version_number == 1:
+            # Find original in history
+            if original_id in brief.image_refinement_history:
+                # Original should be the one with refinement_iteration = 0
+                for img in [current_image] + brief.image_refinement_history[original_id].refinements:
+                    if img.refinement_iteration == 0:
+                        target_version = img
+                        break
+            else:
+                # No refinement history, current is original
+                if current_image.refinement_iteration == 0:
+                    target_version = current_image
+
+        else:
+            # Get from refinement history
+            if original_id in brief.image_refinement_history:
+                history = brief.image_refinement_history[original_id]
+                # version_number - 1 because version 1 is original (index 0), version 2 is refinements[0]
+                if version_number - 2 < len(history.refinements):
+                    target_version = history.refinements[version_number - 2]
+
+        if not target_version:
+            return validate_tool_result({
+                "success": False,
+                "error": f"Version {version_number} not found for variation {variation_number}"
+            })
+
+        # Update current image in Redis
+        brief.hero_images[variation_number - 1] = target_version
+        updated_brief = await redis_client.update_project_brief(
+            project_id,
+            {"hero_images": brief.hero_images}
+        )
+
+        # Broadcast updated brief to frontend (for Project Brief panel)
+        frontend_ws = getattr(select_image_version, '_frontend_ws', None)
+        if frontend_ws:
+            try:
+                await frontend_ws.send_text(json.dumps({
+                    "type": "brief_update",
+                    "data": {
+                        "brief": updated_brief.model_dump(mode="json"),
+                        "changed_fields": ["hero_images"]
+                    }
+                }))
+                logger.info(f"[TOOL] Broadcasted brief_update with version rollback to frontend")
+            except Exception as e:
+                logger.error(f"[TOOL] Failed to broadcast brief_update: {e}")
+
+        # Broadcast asset_added to update Hero Images panel (with generation and refinement metadata)
+        await send_asset_added("art_director", "images", {
+            "images": [img.model_dump() for img in updated_brief.hero_images],
+            "current_generation": updated_brief.current_generation,
+            "generation_history": [snapshot.model_dump(mode="json") for snapshot in updated_brief.generation_history],
+            "refinement_history": {
+                asset_id: history.model_dump()
+                for asset_id, history in updated_brief.image_refinement_history.items()
+            }
+        })
+
+        # Broadcast version selection event
+        await send_websocket_event({
+            "type": "image_version_selected",
+            "variation_number": variation_number,
+            "version_number": version_number,
+            "selected_image": target_version.model_dump(),
+        })
+
+        return validate_tool_result({
+            "success": True,
+            "message": f"Restored version {version_number} of image {variation_number}",
+            "version_number": version_number,
+            "description": target_version.description,
+        })
+
+    except Exception as e:
+        logger.error(f"[TOOL] select_image_version failed: {e}", exc_info=True)
+        return validate_tool_result({
+            "success": False,
+            "error": str(e),
+            "message": f"Failed to select version: {str(e)}"
+        })
+
+
+# ============================================================================
 # ADK AGENT & RUNNER SETUP
 # ============================================================================
 
@@ -1269,7 +1864,14 @@ You're the Executive Producer of AI Agency Hub. Guide clients via conversational
 
 **Stage 2: Strategy** → Call `create_campaign_strategy` → Present 3 slogans (exact text from tool) → User selects → Call `update_project_brief(selected_slogan="...")`
 
-**Stage 3: Images** → Call `generate_hero_images` (needs slogan) → Present 4 images (exact descriptions) → User selects (e.g., "fourth one") → Call `update_project_brief(selected_image_variation=4)`
+**Stage 3: Images** → Call `generate_hero_images` (needs slogan) → Art Director generates 4 complete variations (will auto-retry failed ones) → Present 4 images (exact descriptions) → User selects (e.g., "fourth one") → Call `update_project_brief(selected_image_variation=4)`
+
+**Stage 3b: Image Refinement (Optional)** → After presenting images, user may refine:
+- Single: "Option 1 needs more color" → `refine_hero_image(1, "add more vibrant colors")`
+- Batch: "All too dark" → `refine_all_hero_images("increase brightness")`
+- Creates new version (v2, v3, etc.) → Present refined images
+- User can compare versions → Continue refining or select final
+- Max 5 iterations per image → Suggest starting fresh if limit reached
 
 **Stage 4: Assets** → video (`generate_social_video`, needs image) | audio (`generate_audio_assets`, needs slogan) | page (`generate_landing_page`, needs image)
 
@@ -1286,12 +1888,25 @@ You're the Executive Producer of AI Agency Hub. Guide clients via conversational
 - User requests page → `generate_landing_page` (needs image ✓)
 - User references past → `load_memory(query="...")`
 
+# 🎨 IMAGE REFINEMENT
+- User refines single image → `refine_hero_image(variation_number, feedback)`
+  Patterns: "option N is nice, but [feedback]" | "make option N [changes]" | "option N needs [changes]"
+  Examples: "Option 1 is great, but add modern elements" → `refine_hero_image(1, "add modern elements")`
+- User refines all images → `refine_all_hero_images(feedback)`
+  Patterns: "all images [change]" | "make them all [change]"
+  Examples: "All images feel too dark" → `refine_all_hero_images("increase brightness")`
+- User selects version → `select_image_version(variation_number, version_number)`
+  Patterns: "go back to version N" | "use version N of option X"
+  Examples: "Go back to version 2 of option 1" → `select_image_version(1, 2)`
+
 # VOICE & TONE
 **Style**: Warm partner, not robot. Concise (audio = brevity). Visually descriptive. Balanced critique (strength + consideration per option).
 
 **Audio**: Say "option one" not "#1". Confirm selections ("Going with two—great!"). Natural pauses. Stay in character—decline off-topic.
 
 **Critique Example**: "Option 1 is bold, tech-forward. Option 2 is catchy, playful, might skew younger. Option 3 emphasizes precision."
+
+**Refinements**: Acknowledge what user likes ("Great, you like the composition..."), confirm change ("...let me add those modern elements"). After refinement: describe what changed while preserving what they liked ("I've added holographic UI overlays while keeping that dramatic lighting you loved"). Offer comparison: "Want to see before and after?"
 
 # MEMORY
 **PreloadMemoryTool** (auto): Memories load at start. Use: "Last time for AuraAI, you preferred minimalist..."
@@ -1342,6 +1957,11 @@ agent_kwargs = {
         update_project_brief,
         create_campaign_strategy,
         generate_hero_images,
+        # Image refinement tools (NEW)
+        refine_hero_image,
+        refine_all_hero_images,
+        select_image_version,
+        # Video/audio/web tools
         generate_social_video,
         generate_audio_assets,
         generate_landing_page,
@@ -1430,6 +2050,7 @@ class GeminiLiveADKConnection:
 
         # Set context for tools (so they know which project to use)
         for tool in [update_project_brief, create_campaign_strategy, generate_hero_images,
+                     refine_hero_image, refine_all_hero_images, select_image_version,
                      generate_social_video, generate_audio_assets, generate_landing_page]:
             tool._session_id = session_id
             tool._project_id = project_id
@@ -1447,6 +2068,11 @@ class GeminiLiveADKConnection:
                 update_project_brief,
                 create_campaign_strategy,
                 generate_hero_images,
+                # Image refinement tools (NEW)
+                refine_hero_image,
+                refine_all_hero_images,
+                select_image_version,
+                # Video/audio/web tools
                 generate_social_video,
                 generate_audio_assets,
                 generate_landing_page,
