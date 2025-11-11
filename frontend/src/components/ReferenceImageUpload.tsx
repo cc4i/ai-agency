@@ -115,7 +115,7 @@ export function ReferenceImageUpload({ projectId }: ReferenceImageUploadProps) {
         onClick={() => fileInputRef.current?.click()}
         disabled={uploading || (brief?.reference_images && brief.reference_images.length > 0)}
         className={cn(
-          "group p-2 rounded-lg bg-gradient-to-br from-purple-500/10 to-blue-500/10 border border-purple-500/30",
+          "group p-1.5 rounded-lg bg-gradient-to-br from-purple-500/10 to-blue-500/10 border border-purple-500/30",
           "hover:from-purple-500/20 hover:to-blue-500/20 hover:border-purple-500/50",
           "transition-all duration-200 shadow-lg shadow-purple-500/10",
           (uploading || (brief?.reference_images && brief.reference_images.length > 0)) &&
@@ -128,7 +128,7 @@ export function ReferenceImageUpload({ projectId }: ReferenceImageUploadProps) {
         }
       >
         <Upload className={cn(
-          "w-6 h-6 text-purple-400 transition-colors",
+          "w-4 h-4 text-purple-400 transition-colors",
           uploading && "animate-pulse",
           !uploading && !(brief?.reference_images && brief.reference_images.length > 0) && "group-hover:text-purple-300"
         )} />

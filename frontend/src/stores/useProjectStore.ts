@@ -28,13 +28,43 @@ export interface ProjectBrief {
     description: string;
     generation_params?: any;
   }>;
+
+  // Strategy outputs (NEW - persisted to Redis)
+  slogans?: string[];
+  personas?: Array<{
+    name: string;
+    age_range: string;
+    description: string;
+    pain_points: string[];
+    motivations: string[];
+    product_usage_context: string;
+  }>;
   selected_slogan?: string;
+
+  // Art outputs
+  hero_images?: Array<{
+    asset_id: string;
+    url: string;
+    description: string;
+    generation_params: any;
+    parent_asset_id?: string;
+    refinement_iteration?: number;
+    user_feedback_applied?: string;
+    generation_number?: number;
+    variation_number?: number;
+  }>;
   selected_image?: {
     asset_id: string;
     url: string;
     generation_params: any;
     description: string;
   };
+
+  // Generation tracking (NEW - production level)
+  current_generation?: number;
+  generation_history?: Array<any>;
+  image_refinement_history?: Record<string, any>;
+
   created_at: string;
   updated_at: string;
 }

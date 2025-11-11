@@ -124,7 +124,40 @@ export function useWebSocket(
 
           case 'brief_init':
             if (message.data.brief) {
-              setBrief(message.data.brief);
+              const brief = message.data.brief;
+              setBrief(brief);
+
+              // CRITICAL: Reconstruct assets from persisted brief fields
+              // This ensures assets display after page refresh/reconnect
+              logger.debug('[WebSocket] Reconstructing assets from brief...');
+
+              // Reconstruct strategy assets (slogans + personas)
+              if (brief.slogans?.length > 0 || brief.personas?.length > 0) {
+                addAsset('strategy', {
+                  type: 'slogans',
+                  data: {
+                    slogans: brief.slogans || [],
+                    personas: brief.personas || [],
+                  },
+                  created_at: brief.updated_at || new Date().toISOString(),
+                });
+                logger.debug(`[WebSocket] ✓ Reconstructed strategy: ${brief.slogans?.length || 0} slogans, ${brief.personas?.length || 0} personas`);
+              }
+
+              // Reconstruct art director assets (hero images)
+              if (brief.hero_images?.length > 0) {
+                addAsset('art_director', {
+                  type: 'images',
+                  data: {
+                    images: brief.hero_images,
+                    current_generation: brief.current_generation || 1,
+                    generation_history: brief.generation_history || [],
+                    refinement_history: brief.image_refinement_history || {},
+                  },
+                  created_at: brief.updated_at || new Date().toISOString(),
+                });
+                logger.debug(`[WebSocket] ✓ Reconstructed hero images: ${brief.hero_images.length} images (Gen ${brief.current_generation || 1})`);
+              }
             }
             break;
 

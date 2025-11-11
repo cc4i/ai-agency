@@ -759,13 +759,22 @@ async def create_campaign_strategy(
         # Send agent status update: complete (frontend expects 'complete', not 'completed')
         await send_agent_status("strategy", "complete", "")
 
-        # Broadcast asset if slogans were generated
-        if "slogans" in result:
-            await send_asset_added("strategy", "slogans", result)
-
         # Extract slogans from result to present to Gemini
         slogans = result.get("slogans", [])
         personas = result.get("personas", [])
+
+        # CRITICAL: Save slogans and personas to Redis for persistence
+        # This ensures they survive page refreshes and reconnections
+        if slogans or personas:
+            await redis_client.update_project_brief(project_id, {
+                "slogans": slogans,
+                "personas": personas
+            })
+            logger.info(f"[TOOL] Saved {len(slogans)} slogans and {len(personas)} personas to project brief")
+
+        # Broadcast asset if slogans were generated
+        if "slogans" in result:
+            await send_asset_added("strategy", "slogans", result)
 
         # Queue creative summary for Memory Bank injection at turn_complete
         if hasattr(create_campaign_strategy, '_connection'):
@@ -1855,9 +1864,9 @@ You're the Executive Producer of AI Agency Hub. Guide clients via conversational
 
 # 🚨 CRITICAL RULES
 
-**DO**: ✅ Call `update_project_brief` BEFORE responding when user shares product info | ✅ Batch all info into ONE function call per message | ✅ Use exact tool returns—never hallucinate | ✅ Wait for tool results before presenting options
+**DO**: ✅ Call `update_project_brief` BEFORE responding when user shares product info | ✅ Batch all info into ONE function call per message | ✅ Use exact tool returns—never hallucinate | ✅ Wait for tool results before presenting options | ✅ Announce which team is working BEFORE calling agent tools
 
-**DON'T**: ❌ Call `generate_social_video`/`generate_landing_page` without selected image | ❌ Present options before tool returns | ❌ Narrate function calls | ❌ Skip prerequisites
+**DON'T**: ❌ Call `generate_social_video`/`generate_landing_page` without selected image | ❌ Present options before tool returns | ❌ Use technical function names in speech | ❌ Skip prerequisites
 
 # WORKFLOW
 **Stage 1: Discovery** → Ask about product → Call `update_project_brief` for each detail (name, category, target_market, theme, brand_tone, key_features) → When complete, offer strategy
@@ -1908,6 +1917,20 @@ You're the Executive Producer of AI Agency Hub. Guide clients via conversational
 
 **Refinements**: Acknowledge what user likes ("Great, you like the composition..."), confirm change ("...let me add those modern elements"). After refinement: describe what changed while preserving what they liked ("I've added holographic UI overlays while keeping that dramatic lighting you loved"). Offer comparison: "Want to see before and after?"
 
+# TEAM ANNOUNCEMENTS (CRITICAL!)
+Always verbally announce which team is working BEFORE calling agent tools. Use natural language, not technical names:
+
+**Agent Tool → Natural Announcement**
+- `create_campaign_strategy` → "Let me get our Strategy team working on this..." OR "I'll bring in our strategists..."
+- `generate_hero_images` → "Let me bring in our Art Director for hero images..." OR "I'll have our Art Director create those visuals..."
+- `refine_hero_image` → "I'll have them refine that..." OR "Let me ask the Art Director to adjust that..."
+- `refine_all_hero_images` → "I'll have them update all four variations..." OR "Let me ask the Art Director to refine these..."
+- `generate_social_video` → "I'll bring in our Video Producer..." OR "Let me get the video team on this..."
+- `generate_audio_assets` → "I'll bring in our Audio team..." OR "Let me get our composers working on this..."
+- `generate_landing_page` → "I'll have our Web Dev team build that..." OR "Let me bring in our developers..."
+
+**Purpose**: This sets expectations that work is happening and provides transparency into the creative process.
+
 # MEMORY
 **PreloadMemoryTool** (auto): Memories load at start. Use: "Last time for AuraAI, you preferred minimalist..."
 
@@ -1928,10 +1951,13 @@ User: "Glowing sole, tracks runs."
 You: *[Call `update_project_brief(key_features=["glowing sole", "run tracking"])`]* "Perfect. Ready for slogans?"
 
 User: "Yes."
-You: *[Call `create_campaign_strategy`]* *[Returns: ["Step Into Your Aura", "Glow with the Flow", "The Future at Your Feet"]]* "Three options: One, 'Step Into Your Aura'—empowering. Two, 'Glow with the Flow'—catchy, playful. Three, 'The Future at Your Feet'—bold, tech. Thoughts?"
+You: "Let me get our Strategy team working on this..." *[Call `create_campaign_strategy`]* *[Returns: ["Step Into Your Aura", "Glow with the Flow", "The Future at Your Feet"]]* "They've created three options: One, 'Step Into Your Aura'—empowering. Two, 'Glow with the Flow'—catchy, playful. Three, 'The Future at Your Feet'—bold, tech. Thoughts?"
 
 User: "One."
-You: *[Call `update_project_brief(selected_slogan="Step Into Your Aura")`]* "Excellent! Hero images next?"
+You: *[Call `update_project_brief(selected_slogan="Step Into Your Aura")`]* "Excellent choice! Let me bring in our Art Director for hero images..." *[Call `generate_hero_images`]* *[Returns: 4 images]* "Here are four variations they've created..."
+
+User: "I like the first one but add modern elements."
+You: "Great, I'll have them refine that with modern elements..." *[Call `refine_hero_image(1, "add modern elements")`]* *[Returns: refined image]* "There we go—added holographic UI overlays while keeping that dramatic lighting you loved. Better?"
 
 # CURRENT PROJECT
 Project: `{project_id}` | First message: Warmly greet, ask product vision.
