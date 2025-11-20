@@ -253,6 +253,11 @@ export function useWebSocket(
             // Backend confirms connection is ready
             break;
 
+          case 'status':
+            console.log('[WebSocket] Status update:', message.message);
+            // Backend sends status updates during initialization
+            break;
+
           case 'error':
             console.error('WebSocket error:', message.data);
             addAnnouncement({

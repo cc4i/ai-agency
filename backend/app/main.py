@@ -206,13 +206,34 @@ async def gemini_live_adk_websocket(
     await websocket.accept()
     logger.info(f"[ADK] ✓ WebSocket accepted for session: {session_id}")
 
+    # Send initialization status to frontend to keep connection alive
+    try:
+        await websocket.send_text(json.dumps({
+            "type": "status",
+            "message": "Initializing AI agent..."
+        }))
+    except Exception as e:
+        logger.warning(f"[ADK] Failed to send initialization status: {e}")
+
     # Create ADK-based Gemini Live connection with user-selected settings
+    # This is a heavy operation (creates Agent, Runner, Memory Bank)
+    logger.info(f"[ADK] Creating GeminiLiveADKConnection (this may take a few seconds)...")
     gemini_connection = GeminiLiveADKConnection(
         session_id=session_id,
         project_id=project_id,
         model_name=model,  # User-selected model
         voice_name=voice,  # User-selected voice
     )
+    logger.info(f"[ADK] ✓ GeminiLiveADKConnection created successfully")
+
+    # Send ready status to frontend
+    try:
+        await websocket.send_text(json.dumps({
+            "type": "status",
+            "message": "AI agent ready"
+        }))
+    except Exception as e:
+        logger.warning(f"[ADK] Failed to send ready status: {e}")
 
     try:
         # Establish connection: Frontend → Backend → ADK → Gemini Live

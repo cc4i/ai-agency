@@ -101,11 +101,11 @@ gcloud run deploy ${SERVICE_NAME} \
     --region ${REGION} \
     --platform managed \
     --allow-unauthenticated \
-    --memory 2Gi \
-    --cpu 2 \
+    --memory 16Gi \
+    --cpu 4 \
     --timeout 300s \
     --max-instances 10 \
-    --min-instances 0 \
+    --min-instances 1 \
     --port 8080 \
     --set-env-vars "${ENV_VARS}"
 
