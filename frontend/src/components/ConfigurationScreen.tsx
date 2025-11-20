@@ -9,6 +9,7 @@
 
 import { useState, useEffect } from 'react';
 import { Sparkles, CheckCircle2, Info } from 'lucide-react';
+import { API_BASE_URL } from '@/config';
 
 interface ModelOption {
   name: string;
@@ -50,7 +51,7 @@ export function ConfigurationScreen({ onStart }: ConfigurationScreenProps) {
 
   useEffect(() => {
     // Fetch available models and voices from backend
-    fetch('http://localhost:8000/api/config/models-voices')
+    fetch(`${API_BASE_URL}/api/config/models-voices`)
       .then(res => {
         if (!res.ok) throw new Error('Failed to fetch configuration');
         return res.json();

@@ -3,9 +3,8 @@ const nextConfig = {
   reactStrictMode: true,
   swcMinify: true,
 
-  // Enable standalone output for Docker/Cloud Run deployments
-  // This reduces image size from ~1GB to ~200MB
-  output: process.env.NODE_ENV === 'production' ? 'standalone' : undefined,
+  // Enable standalone output for Docker
+  output: 'standalone',
 
   images: {
     remotePatterns: [
@@ -15,6 +14,12 @@ const nextConfig = {
         pathname: '/**',
       },
     ],
+  },
+
+  // Ensure environment variables are available at runtime
+  env: {
+    NEXT_PUBLIC_BACKEND_URL: process.env.NEXT_PUBLIC_BACKEND_URL,
+    NEXT_PUBLIC_WS_URL: process.env.NEXT_PUBLIC_WS_URL,
   },
 }
 

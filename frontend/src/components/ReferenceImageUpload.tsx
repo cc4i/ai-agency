@@ -12,6 +12,7 @@
 
 import { Upload } from 'lucide-react';
 import { useRef, useState, ChangeEvent } from 'react';
+import { API_BASE_URL } from '@/config';
 import { cn } from '@/lib/utils';
 import { useProjectStore } from '@/stores/useProjectStore';
 
@@ -62,7 +63,8 @@ export function ReferenceImageUpload({ projectId }: ReferenceImageUploadProps) {
         const formData = new FormData();
         formData.append('file', file);
 
-        const uploadResponse = await fetch('http://localhost:8000/api/assets/upload', {
+
+        const uploadResponse = await fetch(`${API_BASE_URL}/api/assets/upload`, {
           method: 'POST',
           body: formData,
         });
@@ -76,7 +78,7 @@ export function ReferenceImageUpload({ projectId }: ReferenceImageUploadProps) {
         console.log(`[ReferenceUpload] Uploaded ${file.name}, asset_id: ${imageAsset.asset_id}`);
 
         // Add to project brief
-        const addResponse = await fetch(`http://localhost:8000/api/projects/${projectId}/reference-images`, {
+        const addResponse = await fetch(`${API_BASE_URL}/api/projects/${projectId}/reference-images`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(imageAsset),
@@ -91,7 +93,7 @@ export function ReferenceImageUpload({ projectId }: ReferenceImageUploadProps) {
       }
 
       // Fetch updated brief and update store
-      const briefResponse = await fetch(`http://localhost:8000/api/projects/${projectId}`);
+      const briefResponse = await fetch(`${API_BASE_URL}/api/projects/${projectId}`);
       if (briefResponse.ok) {
         const updatedBrief = await briefResponse.json();
         updateBrief(updatedBrief, ['reference_images']);
@@ -119,7 +121,7 @@ export function ReferenceImageUpload({ projectId }: ReferenceImageUploadProps) {
           "hover:from-purple-500/20 hover:to-blue-500/20 hover:border-purple-500/50",
           "transition-all duration-200 shadow-lg shadow-purple-500/10",
           (uploading || (brief?.reference_images && brief.reference_images.length > 0)) &&
-            "opacity-40 cursor-not-allowed hover:from-purple-500/10 hover:to-blue-500/10"
+          "opacity-40 cursor-not-allowed hover:from-purple-500/10 hover:to-blue-500/10"
         )}
         title={
           brief?.reference_images && brief.reference_images.length > 0

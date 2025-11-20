@@ -13,7 +13,9 @@ import { useEffect, useRef, useCallback } from 'react';
 import { useProjectStore } from '@/stores/useProjectStore';
 import { logger } from '@/utils/logger';
 
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000';
+import { WS_BASE_URL } from '@/config';
+
+const WS_URL = WS_BASE_URL;
 
 interface WebSocketMessage {
   type: string;
@@ -45,6 +47,7 @@ export function useWebSocket(
   const audioQueueRef = useRef<AudioBuffer[]>([]);
   const isPlayingRef = useRef<boolean>(false);
   const nextPlayTimeRef = useRef<number>(0); // Track scheduled playback time for gapless audio
+  const currentSourceRef = useRef<AudioBufferSourceNode | null>(null); // Track active source for interruption
   const transcriptBuffer = useRef<{ role: 'user' | 'assistant'; text: string } | null>(null);
 
   // Audio processing chain - create once and reuse
@@ -224,6 +227,23 @@ export function useWebSocket(
 
           case 'interrupted':
             console.log('[WebSocket] Turn interrupted');
+
+            // Stop current audio immediately
+            if (currentSourceRef.current) {
+              try {
+                currentSourceRef.current.stop();
+                console.log('[Audio] 🛑 Stopped current source due to interruption');
+              } catch (e) {
+                // Ignore errors if already stopped
+              }
+              currentSourceRef.current = null;
+            }
+
+            // Clear queue and reset state
+            audioQueueRef.current = [];
+            isPlayingRef.current = false;
+            nextPlayTimeRef.current = 0;
+
             setProducerSpeaking(false);
             transcriptBuffer.current = null; // Clear buffer on interruption
             break;
@@ -331,6 +351,7 @@ export function useWebSocket(
 
     const source = audioContextRef.current.createBufferSource();
     source.buffer = audioBuffer;
+    currentSourceRef.current = source; // Track active source
 
     // Connect source - either to processing chain or direct to destination
     if (enableAudioProcessing.current && audioFilterRef.current) {
@@ -356,6 +377,11 @@ export function useWebSocket(
 
     // Check for more buffers when this one finishes
     source.onended = () => {
+      // Clear reference if this was the active source
+      if (currentSourceRef.current === source) {
+        currentSourceRef.current = null;
+      }
+
       // Play next buffer if available
       if (audioQueueRef.current.length > 0) {
         playNextAudioBuffer();
@@ -453,8 +479,8 @@ export function useWebSocket(
         logger.info(`  - Max amplitude: ${maxSample} (+) / Min: ${minSample} (-)`);
         logger.info(`  - Range: ${maxSample - minSample} / 65536 possible`);
         logger.info(`  - RMS level: ${rms.toFixed(1)} (${rmsDb.toFixed(1)} dB)`);
-        logger.info(`  - Clipped samples: ${clippedCount} (${(clippedCount/numSamples*100).toFixed(2)}%)`);
-        logger.info(`  - Silent samples: ${silentCount} (${(silentCount/numSamples*100).toFixed(2)}%)`);
+        logger.info(`  - Clipped samples: ${clippedCount} (${(clippedCount / numSamples * 100).toFixed(2)}%)`);
+        logger.info(`  - Silent samples: ${silentCount} (${(silentCount / numSamples * 100).toFixed(2)}%)`);
         logger.info(`  - Zero-crossing rate: ${zcr.toFixed(4)} (noise indicator: >0.5 = likely noise)`);
         logger.info(`  - First 10 samples: ${firstSamples.join(', ')}`);
 

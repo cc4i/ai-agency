@@ -11,6 +11,7 @@
 
 import { X } from 'lucide-react';
 import { useState } from 'react';
+import { API_BASE_URL } from '@/config';
 import { cn } from '@/lib/utils';
 import { useProjectStore } from '@/stores/useProjectStore';
 
@@ -34,9 +35,10 @@ export function ReferenceImagesDisplay({ images, projectId }: ReferenceImagesDis
     if (deleting) return;
 
     setDeleting(true);
+
     try {
       const response = await fetch(
-        `http://localhost:8000/api/projects/${projectId}/reference-images/${assetId}`,
+        `${API_BASE_URL}/api/projects/${projectId}/reference-images/${assetId}`,
         { method: 'DELETE' }
       );
 
@@ -48,7 +50,7 @@ export function ReferenceImagesDisplay({ images, projectId }: ReferenceImagesDis
       console.log(`[ReferenceImages] Deleted image ${assetId}`);
 
       // Fetch updated brief and update store
-      const briefResponse = await fetch(`http://localhost:8000/api/projects/${projectId}`);
+      const briefResponse = await fetch(`${API_BASE_URL}/api/projects/${projectId}`);
       if (briefResponse.ok) {
         const updatedBrief = await briefResponse.json();
         updateBrief(updatedBrief, ['reference_images']);

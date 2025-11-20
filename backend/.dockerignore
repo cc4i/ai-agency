@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+ENV/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+# .env
+.env.local
+.env.*.local
+
+# Logs
+logs/
+*.log
+
+# Audio recordings (debug files)
+audio_recordings/
+*.pcm
+*.wav
+
+# Google Cloud credentials (should be set via Cloud Run env vars)
+# application_default_credentials.json
+*.json
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+README.md
+*.md
+
+# Tests
+tests/
+pytest.ini
+
+# CI/CD
+.github/
+
+# Misc
+.DS_Store
+Thumbs.db

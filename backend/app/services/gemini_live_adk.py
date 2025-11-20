@@ -1973,70 +1973,75 @@ Project: `{project_id}` | First message: Warmly greet, ask product vision.
 # settings to connect simultaneously without conflicts.
 
 # Create the Executive Producer agent with all tools
-agent_kwargs = {
-    "name": "executive_producer",
-    "model": "gemini-live-2.5-flash", #"gemini-live-2.5-flash-preview-native-audio-09-2025",  # Vertex AI native audio model
-    "description": "Executive Producer for AI Agency Hub - coordinates creative campaign development",
-    "instruction": "",  # Will be set dynamically per session
-    "tools": [
-        # Campaign management tools
-        update_project_brief,
-        create_campaign_strategy,
-        generate_hero_images,
-        # Image refinement tools (NEW)
-        refine_hero_image,
-        refine_all_hero_images,
-        select_image_version,
-        # Video/audio/web tools
-        generate_social_video,
-        generate_audio_assets,
-        generate_landing_page,
-        # Memory Bank tools (enabled via feature flag)
-        PreloadMemoryTool() if settings.enable_memory_bank else None,
-        load_memory if settings.enable_memory_bank else None,
-    ],
-}
+# DEPRECATED & COMMENTED OUT TO FIX STARTUP CRASH
+# The following global initialization causes Pydantic validation errors because
+# required fields (like 'instruction') are missing. Since this code is unused
+# (replaced by per-connection initialization), it is safe to disable.
+
+# agent_kwargs = {
+#     "name": "executive_producer",
+#     "model": "gemini-live-2.5-flash", #"gemini-live-2.5-flash-preview-native-audio-09-2025",  # Vertex AI native audio model
+#     "description": "Executive Producer for AI Agency Hub - coordinates creative campaign development",
+#     "instruction": "",  # Will be set dynamically per session
+#     "tools": [
+#         # Campaign management tools
+#         update_project_brief,
+#         create_campaign_strategy,
+#         generate_hero_images,
+#         # Image refinement tools (NEW)
+#         refine_hero_image,
+#         refine_all_hero_images,
+#         select_image_version,
+#         # Video/audio/web tools
+#         generate_social_video,
+#         generate_audio_assets,
+#         generate_landing_page,
+#         # Memory Bank tools (enabled via feature flag)
+#         PreloadMemoryTool() if settings.enable_memory_bank else None,
+#         load_memory if settings.enable_memory_bank else None,
+#     ],
+# }
 
 # NOTE: after_agent_callback is NOT registered because it doesn't trigger in run_live() mode
 # Memory Bank persistence is handled manually on turn_complete events instead
 # See _agent_to_client_messaging() method for manual persistence logic
 
-executive_producer_agent = Agent(**agent_kwargs)
+# executive_producer_agent = Agent(**agent_kwargs)
 
 # Remove None values from tools list (when Memory Bank is disabled)
-executive_producer_agent.tools = [t for t in executive_producer_agent.tools if t is not None]
+# executive_producer_agent.tools = [t for t in executive_producer_agent.tools if t is not None]
 
 # Fix ADK app name mismatch warning by explicitly setting the agent file path
 # This overrides the automatic detection that infers app name from package path
-executive_producer_agent._file = "app/services/gemini_live_adk.py"
+# executive_producer_agent._file = "app/services/gemini_live_adk.py"
 
 # Create session service and runner (reuse across connections)
-session_service = InMemorySessionService()
+# session_service = InMemorySessionService()
 
 # Configure runner with Memory Bank support
-runner_kwargs = {
-    "app_name": "ai_agency_hub",
-    "agent": executive_producer_agent,
-    "session_service": session_service,
-}
+# runner_kwargs = {
+#     "app_name": "ai_agency_hub",
+#     "agent": executive_producer_agent,
+#     "session_service": session_service,
+# }
 
 # Add Memory Bank service if enabled
-if settings.enable_memory_bank:
-    # Initialize memory service before passing to runner
-    memory_service._initialize()
-    if memory_service._service:
-        # Pass the underlying VertexAiMemoryBankService to runner
-        runner_kwargs["memory_service"] = memory_service._service
-        logger.info("✓ Memory Bank service registered with runner")
-    else:
-        logger.warning("⚠ Memory Bank service failed to initialize, running without memory")
+# if settings.enable_memory_bank:
+#     # Initialize memory service before passing to runner
+#     memory_service.initialize()
+#     if memory_service._service:
+#         # Pass the underlying VertexAiMemoryBankService to runner
+#         runner_kwargs["memory_service"] = memory_service._service
+#         logger.info("✓ Memory Bank service registered with runner")
+#     else:
+#         logger.warning("⚠ Memory Bank service failed to initialize, running without memory")
 
-runner = Runner(**runner_kwargs)
+# runner = Runner(**runner_kwargs)
 
 # Count tools for logging
-tool_count = len(executive_producer_agent.tools)
-memory_status = "with Memory Bank (turn_complete persistence)" if settings.enable_memory_bank else "without Memory Bank"
-logger.info(f"✓ ADK Executive Producer agent created with {tool_count} tools ({memory_status})")
+# tool_count = len(executive_producer_agent.tools)
+# memory_status = "with Memory Bank (turn_complete persistence)" if settings.enable_memory_bank else "without Memory Bank"
+# logger.info(f"✓ ADK Executive Producer agent created with {tool_count} tools ({memory_status})")
 
 
 # ============================================================================
@@ -2144,8 +2149,9 @@ class GeminiLiveADKConnection:
     async def connect(self, frontend_ws: WebSocket):
         """
         Establish connection: Frontend → Backend → ADK → Gemini Live
+
+        Note: WebSocket is already accepted in main.py before this method is called.
         """
-        await frontend_ws.accept()
         self.frontend_ws = frontend_ws
 
         # Update tool context with WebSocket reference
@@ -2153,8 +2159,6 @@ class GeminiLiveADKConnection:
                      generate_social_video, generate_audio_assets, generate_landing_page]:
             tool._frontend_ws = frontend_ws
             logger.info(f"✓ Set WebSocket reference on tool: {tool.__name__}")
-
-        logger.info(f"WebSocket accepted for session: {self.session_id}")
 
         # Send initial connection confirmation to frontend
         try:
@@ -2281,7 +2285,17 @@ class GeminiLiveADKConnection:
         message_count = 0
         while True:
             try:
-                message_json = await self.frontend_ws.receive_text()
+                try:
+                    message_json = await self.frontend_ws.receive_text()
+                except WebSocketDisconnect:
+                    logger.info(f"[ADK] WebSocket disconnected by client")
+                    break
+                except RuntimeError as e:
+                    if "WebSocket is not connected" in str(e):
+                        logger.warning(f"[ADK] WebSocket not connected in receive loop: {e}")
+                        break
+                    raise e
+                    
                 message = json.loads(message_json)
                 message_count += 1
 

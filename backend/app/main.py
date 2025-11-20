@@ -50,6 +50,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     await redis_client.connect()
     logger.info("Redis connected successfully")
 
+    # Auto-seed demo data if needed
+    try:
+        from scripts.seed_demo_data import CAMPAIGNS, create_demo_campaign
+        
+        # Check if default project exists
+        default_project_id = "aura_smart_sneaker"
+        brief = await redis_client.get_project_brief(default_project_id)
+        
+        if not brief:
+            logger.info(f"Default project '{default_project_id}' not found. Auto-seeding...")
+            await create_demo_campaign(CAMPAIGNS["aura"], "aura")
+            logger.info("✓ Auto-seeding complete")
+        else:
+            logger.info(f"✓ Default project '{default_project_id}' exists")
+            
+    except Exception as e:
+        logger.error(f"Auto-seeding failed: {e}")
+
     yield
 
     # Shutdown
@@ -66,11 +84,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Configure CORS
+# Configure CORS - Allow all origins for testing
+# Note: allow_credentials must be False when allow_origins is ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # Next.js frontend
-    allow_credentials=True,
+    allow_origins=["*"],  # Allow all origins
+    allow_credentials=False,  # Cannot be True with wildcard origins
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -182,6 +201,11 @@ async def gemini_live_adk_websocket(
         await websocket.close(code=1008, reason=f"Invalid voice: {voice}")
         return
 
+    # CRITICAL: Accept WebSocket IMMEDIATELY to prevent browser timeout
+    # Heavy initialization (Agent creation) will happen after accept
+    await websocket.accept()
+    logger.info(f"[ADK] ✓ WebSocket accepted for session: {session_id}")
+
     # Create ADK-based Gemini Live connection with user-selected settings
     gemini_connection = GeminiLiveADKConnection(
         session_id=session_id,
@@ -192,6 +216,7 @@ async def gemini_live_adk_websocket(
 
     try:
         # Establish connection: Frontend → Backend → ADK → Gemini Live
+        logger.info(f"[ADK] Passing accepted WebSocket to connect() for session {session_id}")
         await gemini_connection.connect(websocket)
 
     except WebSocketDisconnect:

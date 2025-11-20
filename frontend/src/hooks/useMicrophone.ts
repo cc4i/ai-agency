@@ -95,13 +95,13 @@ export function useMicrophone({
       processor.onaudioprocess = (e) => {
         const inputData = e.inputBuffer.getChannelData(0);
 
-        // Turn-taking: Don't send audio if Gemini is speaking
-        const currentProducerSpeaking = useProjectStore.getState().isProducerSpeaking;
-        if (currentProducerSpeaking) {
-          // Gemini is speaking, don't interrupt
-          console.log('[Turn-Taking] Gemini speaking, pausing user audio');
-          return;
-        }
+        // Turn-taking: Send audio even if Gemini is speaking to allow for interruption
+        // const currentProducerSpeaking = useProjectStore.getState().isProducerSpeaking;
+        // if (currentProducerSpeaking) {
+        //   // Gemini is speaking, don't interrupt
+        //   console.log('[Turn-Taking] Gemini speaking, pausing user audio');
+        //   return;
+        // }
 
         // Convert Float32Array to Int16Array (PCM16)
         const pcm16 = new Int16Array(inputData.length);
