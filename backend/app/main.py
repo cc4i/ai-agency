@@ -1,5 +1,6 @@
 """FastAPI application entry point."""
 
+import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -217,14 +218,35 @@ async def gemini_live_adk_websocket(
 
     # Create ADK-based Gemini Live connection with user-selected settings
     # This is a heavy operation (creates Agent, Runner, Memory Bank)
+    # Wrap with timeout to prevent indefinite hangs on Cloud Run cold starts
     logger.info(f"[ADK] Creating GeminiLiveADKConnection (this may take a few seconds)...")
-    gemini_connection = GeminiLiveADKConnection(
-        session_id=session_id,
-        project_id=project_id,
-        model_name=model,  # User-selected model
-        voice_name=voice,  # User-selected voice
-    )
-    logger.info(f"[ADK] ✓ GeminiLiveADKConnection created successfully")
+    try:
+        async with asyncio.timeout(30):  # 30 second max for initialization
+            gemini_connection = GeminiLiveADKConnection(
+                session_id=session_id,
+                project_id=project_id,
+                model_name=model,  # User-selected model
+                voice_name=voice,  # User-selected voice
+            )
+        logger.info(f"[ADK] ✓ GeminiLiveADKConnection created successfully")
+    except asyncio.TimeoutError:
+        logger.error(f"[ADK] ❌ Initialization timed out after 30 seconds for session {session_id}")
+        try:
+            await websocket.send_text(json.dumps({
+                "type": "error",
+                "message": "AI initialization timed out. Please try again."
+            }))
+            await websocket.close(code=1011, reason="Initialization timeout")
+        except Exception as e:
+            logger.warning(f"[ADK] Failed to send timeout error to client: {e}")
+        return
+    except Exception as e:
+        logger.error(f"[ADK] ❌ Initialization failed for session {session_id}: {e}", exc_info=True)
+        try:
+            await websocket.close(code=1011, reason=f"Initialization failed: {str(e)}")
+        except:
+            pass
+        return
 
     # Send ready status to frontend
     try:

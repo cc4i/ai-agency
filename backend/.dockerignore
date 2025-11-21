@@ -26,7 +26,7 @@ htmlcov/
 *~
 
 # Environment
-# .env
+.env
 .env.local
 .env.*.local
 
@@ -40,7 +40,7 @@ audio_recordings/
 *.wav
 
 # Google Cloud credentials (should be set via Cloud Run env vars)
-# application_default_credentials.json
+application_default_credentials.json
 *.json
 
 # Git

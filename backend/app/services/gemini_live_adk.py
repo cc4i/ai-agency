@@ -36,7 +36,7 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
-from fastapi import WebSocket
+from fastapi import WebSocket, WebSocketDisconnect
 from google.adk import Agent, Runner
 from google.adk.runners import RunConfig, LiveRequestQueue
 from google.adk.agents.run_config import StreamingMode
@@ -2152,6 +2152,7 @@ class GeminiLiveADKConnection:
 
         Note: WebSocket is already accepted in main.py before this method is called.
         """
+        logger.info(f"[ADK] connect() called for session {self.session_id}")
         self.frontend_ws = frontend_ws
 
         # Update tool context with WebSocket reference
@@ -2219,6 +2220,7 @@ class GeminiLiveADKConnection:
 
     async def _initialize_adk_session(self):
         """Initialize ADK session with Gemini Live."""
+        logger.info(f"[ADK] Initializing ADK session for {self.session_id}...")
         # Get or create session
         session = await self.runner.session_service.get_session(
             app_name="ai_agency_hub",
