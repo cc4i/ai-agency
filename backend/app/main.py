@@ -647,6 +647,51 @@ async def get_image_asset(asset_id: str):
         raise HTTPException(status_code=500, detail="Failed to retrieve image")
 
 
+@app.get("/api/assets/html/{asset_id}")
+async def get_html_asset(asset_id: str):
+    """
+    Serve HTML asset from private GCS bucket.
+
+    Args:
+        asset_id: HTML asset ID (e.g., landing_abc123)
+
+    Returns:
+        HTML file streamed from GCS
+    """
+    from fastapi import HTTPException
+    from fastapi.responses import StreamingResponse
+    from google.cloud import storage
+
+    try:
+        # Initialize GCS client
+        client = storage.Client(project=settings.google_cloud_project)
+        bucket = client.bucket(settings.gcs_bucket_name)
+        blob_name = f"landing-pages/{asset_id}.html"
+        blob = bucket.blob(blob_name)
+
+        # Check if blob exists
+        if not blob.exists():
+            logger.error(f"HTML asset not found: {blob_name}")
+            raise HTTPException(status_code=404, detail="HTML page not found")
+
+        # Stream HTML from GCS
+        logger.info(f"Serving HTML asset: {blob_name}")
+        html_bytes = blob.download_as_bytes()
+
+        return StreamingResponse(
+            iter([html_bytes]),
+            media_type="text/html",
+            headers={
+                "Content-Disposition": "inline",
+                "Cache-Control": "public, max-age=3600"
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"Error serving HTML asset {asset_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve HTML page")
+
+
 # Test Endpoints for Agent System
 @app.post("/api/test/trigger-strategy")
 async def test_trigger_strategy(project_id: str = "aura_smart_sneaker"):

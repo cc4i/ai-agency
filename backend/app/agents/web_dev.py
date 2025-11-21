@@ -186,12 +186,35 @@ class WebDevAgent(AgentBase):
 
         logger.info(f"[WEB_DEV] Creating CodeAsset: {asset_id}")
 
+        # Combine into full HTML for upload
+        full_html = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>{css}</style>
+</head>
+<body>
+  {html}
+  <script>{js}</script>
+</body>
+</html>"""
+
+        # Upload to GCS and get public URL
+        from app.services.storage_client import storage_client
+        try:
+            _, preview_url = await storage_client.upload_html(full_html, asset_id)
+            logger.info(f"[WEB_DEV] Uploaded landing page to: {preview_url}")
+        except Exception as e:
+            logger.error(f"[WEB_DEV] Failed to upload landing page: {e}")
+            preview_url = None
+
         code_asset = CodeAsset(
             asset_id=asset_id,
             html=html,
             css=css,
             javascript=js,
-            preview_url=None,  # Would be deployed URL
+            preview_url=preview_url,
         )
 
         logger.debug(f"Generated landing page: {asset_id}")

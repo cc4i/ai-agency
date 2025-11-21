@@ -371,53 +371,22 @@ function WebDevAssets({ data }: { data: any[] }) {
   const css = code?.css || '';
   const js = code?.javascript || '';
 
-  // Combine into a complete HTML document with inline CSS and JS
-  // Use useMemo to avoid recreating the HTML string on every render
-  const fullHTML = useMemo(() => {
-    return html.includes('<!DOCTYPE')
-      ? html  // If Gemini returned complete HTML, use it
-      : `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <style>${css}</style>
-</head>
-<body>
-  ${html}
-  <script>${js}</script>
-</body>
-</html>`;
-  }, [html, css, js]);
-
-  // Create and manage blob URL lifecycle with useEffect
+  // Create and manage iframe source
   const [iframeSrc, setIframeSrc] = useState<string>('');
 
   useEffect(() => {
-    // Create blob URL
-    const blob = new Blob([fullHTML], { type: 'text/html' });
-    const blobUrl = URL.createObjectURL(blob);
-    setIframeSrc(blobUrl);
-
-    // Cleanup: Revoke blob URL when component unmounts or fullHTML changes
-    return () => {
-      URL.revokeObjectURL(blobUrl);
-    };
-  }, [fullHTML]);
+    // If we have a preview_url (backend API URL), use it directly
+    if (code?.preview_url) {
+      setIframeSrc(code.preview_url);
+    } else {
+      setIframeSrc('');
+    }
+  }, [code?.preview_url]);
 
   // Handler to open landing page in new window
   const handleOpenInBrowser = () => {
-    // Create a fresh blob URL for the new window to avoid revocation issues
-    const blob = new Blob([fullHTML], { type: 'text/html' });
-    const newBlobUrl = URL.createObjectURL(blob);
-    const newWindow = window.open(newBlobUrl, '_blank');
-
-    // Clean up the blob URL after the window opens
-    // Give it a bit of time to load before revoking
-    if (newWindow) {
-      setTimeout(() => {
-        URL.revokeObjectURL(newBlobUrl);
-      }, 1000);
+    if (code?.preview_url) {
+      window.open(code.preview_url, '_blank');
     }
   };
 
@@ -430,8 +399,9 @@ function WebDevAssets({ data }: { data: any[] }) {
         {code && (
           <button
             onClick={handleOpenInBrowser}
-            className="flex items-center gap-2 px-3 py-1.5 text-sm text-zinc-300 hover:text-white bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 hover:border-zinc-600 rounded-lg transition-colors"
-            title="Open in new tab"
+            disabled={!code.preview_url}
+            className="flex items-center gap-2 px-3 py-1.5 text-sm text-zinc-300 hover:text-white bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 hover:border-zinc-600 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            title={code.preview_url ? "Open in new tab" : "Preview unavailable"}
           >
             <ExternalLink className="w-4 h-4" />
             <span>Open in Browser</span>
@@ -446,7 +416,7 @@ function WebDevAssets({ data }: { data: any[] }) {
               src={iframeSrc}
               className="w-full h-[600px]"
               title="Landing page preview"
-              sandbox="allow-scripts"
+              sandbox="allow-scripts allow-same-origin"
             />
           </div>
 
@@ -461,7 +431,9 @@ function WebDevAssets({ data }: { data: any[] }) {
       )}
 
       {code && !iframeSrc && (
-        <div className="text-sm text-zinc-500">Loading preview...</div>
+        <div className="text-sm text-zinc-500 p-4 text-center border border-zinc-800 rounded-lg bg-zinc-900/50">
+          Preview unavailable (Upload failed or pending)
+        </div>
       )}
 
       {!code && (

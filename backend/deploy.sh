@@ -15,6 +15,7 @@ GCS_BUCKET_NAME="${GCS_BUCKET_NAME:-ai-agency-demo}"
 AGENT_ENGINE_ID="${AGENT_ENGINE_ID:-3117603647907692544}"
 ENABLE_MEMORY_BANK="${ENABLE_MEMORY_BANK:-true}"
 GEMINI_API_KEY="${GEMINI_API_KEY:-}"
+BACKEND_URL="${BACKEND_URL:-https://ai-agency-backend-xxxx.run.app}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -49,6 +50,11 @@ else
 fi
 if [[ -n "${AGENT_ENGINE_ID}" && "${ENABLE_MEMORY_BANK}" == "true" ]]; then
     echo -e "  Agent Engine ID: ${AGENT_ENGINE_ID}"
+fi
+if [[ -n "${BACKEND_URL}" ]]; then
+    echo -e "  Backend URL: ${BACKEND_URL}"
+else
+    echo -e "${RED}  Backend URL: NOT SET (will use localhost - likely to fail!)${NC}"
 fi
 echo ""
 read -p "Proceed with deployment? (y/n) " -n 1 -r

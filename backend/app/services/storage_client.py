@@ -167,5 +167,47 @@ class StorageClient:
             raise
 
 
+    async def upload_html(
+        self,
+        html_content: str,
+        asset_id: Optional[str] = None,
+    ) -> tuple[str, str]:
+        """
+        Upload HTML content to Google Cloud Storage.
+
+        Args:
+            html_content: HTML string
+            asset_id: Optional asset ID
+
+        Returns:
+            Tuple of (asset_id, public_url)
+        """
+        if not asset_id:
+            asset_id = f"landing_{uuid.uuid4().hex[:12]}"
+
+        try:
+            client = self._get_client()
+            bucket = client.bucket(self.bucket_name)
+            blob_name = f"landing-pages/{asset_id}.html"
+            blob = bucket.blob(blob_name)
+
+            logger.info(f"Uploading HTML to GCS: gs://{self.bucket_name}/{blob_name}")
+
+            # Upload HTML
+            blob.upload_from_string(html_content, content_type="text/html")
+
+            # Return backend API URL instead of GCS public URL
+            url = f"{settings.backend_url}/api/assets/html/{asset_id}"
+
+            logger.info(f"HTML uploaded successfully to GCS: gs://{self.bucket_name}/{blob_name}")
+            logger.info(f"HTML accessible via: {url}")
+
+            return asset_id, url
+
+        except Exception as e:
+            logger.error(f"GCS HTML upload error: {e}")
+            raise
+
+
 # Global storage client instance
 storage_client = StorageClient()

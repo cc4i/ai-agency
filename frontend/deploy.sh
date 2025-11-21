@@ -115,7 +115,8 @@ gcloud run deploy ${SERVICE_NAME} \
     --min-instances 0 \
     --port 8080 \
     --set-env-vars "NEXT_PUBLIC_BACKEND_URL=${BACKEND_URL}" \
-    --set-env-vars "NEXT_PUBLIC_WS_URL=${WS_URL}"
+    --set-env-vars "NEXT_PUBLIC_WS_URL=${WS_URL}" \
+    --set-env-vars "BACKEND_URL=${BACKEND_URL}"
 
 # Get the service URL
 SERVICE_URL=$(gcloud run services describe ${SERVICE_NAME} \
