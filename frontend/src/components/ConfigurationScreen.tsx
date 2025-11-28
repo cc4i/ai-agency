@@ -1,14 +1,15 @@
 /**
- * Configuration Screen - Model and Voice Selection
+ * Configuration Screen - Model and Voice Selection (Compact)
  *
- * Allows users to choose Gemini Live model and voice before starting session.
- * Organized with 3 model options and 30 voices grouped by personality.
+ * Compact single-screen layout for quick session start.
+ * Row 1: Model selection (horizontal buttons)
+ * Row 2: Voice selection (dropdown)
  */
 
 'use client';
 
-import { useState, useEffect } from 'react';
-import { Sparkles, CheckCircle2, Info } from 'lucide-react';
+import { useState, useEffect, useMemo } from 'react';
+import { Sparkles, Info, ChevronDown } from 'lucide-react';
 import { API_BASE_URL } from '@/config';
 
 interface ModelOption {
@@ -47,7 +48,6 @@ export function ConfigurationScreen({ onStart }: ConfigurationScreenProps) {
   const [selectedVoice, setSelectedVoice] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     // Fetch available models and voices from backend
@@ -90,17 +90,27 @@ export function ConfigurationScreen({ onStart }: ConfigurationScreenProps) {
     onStart(selectedModel, selectedVoice);
   };
 
-  const toggleGroupExpansion = (groupKey: string) => {
-    setExpandedGroups(prev => {
-      const newSet = new Set(prev);
-      if (newSet.has(groupKey)) {
-        newSet.delete(groupKey);
-      } else {
-        newSet.add(groupKey);
-      }
-      return newSet;
+  // Flatten all voices for dropdown
+  const allVoices = useMemo(() => {
+    if (!options) return [];
+    const voices: { name: string; personality: string; description: string; group: string }[] = [];
+    Object.entries(options.voiceGroups).forEach(([groupKey, group]) => {
+      Object.entries(group.voices).forEach(([voiceName, voice]) => {
+        voices.push({
+          name: voiceName,
+          personality: voice.personality,
+          description: voice.description,
+          group: group.label,
+        });
+      });
     });
-  };
+    return voices;
+  }, [options]);
+
+  // Get selected voice details
+  const selectedVoiceDetails = useMemo(() => {
+    return allVoices.find(v => v.name === selectedVoice);
+  }, [allVoices, selectedVoice]);
 
   if (loading) {
     return (
@@ -132,145 +142,104 @@ export function ConfigurationScreen({ onStart }: ConfigurationScreenProps) {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-black via-purple-950/20 to-black text-white flex items-center justify-center p-4 sm:p-8 overflow-y-auto">
-      <div className="max-w-4xl w-full space-y-8 py-8">
+    <div className="h-screen bg-gradient-to-br from-black via-purple-950/20 to-black text-white flex items-center justify-center p-6">
+      <div className="w-full max-w-2xl space-y-8">
         {/* Header */}
-        <div className="text-center space-y-3">
+        <div className="text-center space-y-2">
           <div className="flex items-center justify-center gap-3">
-            <Sparkles className="w-10 h-10 text-purple-400" />
-            <h1 className="text-4xl sm:text-5xl font-bold bg-gradient-to-r from-purple-400 via-pink-400 to-blue-400 bg-clip-text text-transparent">
+            <Sparkles className="w-8 h-8 text-purple-400" />
+            <h1 className="text-3xl font-bold bg-gradient-to-r from-purple-400 via-pink-400 to-blue-400 bg-clip-text text-transparent">
               AI Agency Hub
             </h1>
           </div>
-          <p className="text-zinc-400 text-lg">Configure your Executive Producer</p>
-          <p className="text-zinc-500 text-sm">Choose your preferred model and voice to get started</p>
+          <p className="text-zinc-500 text-sm">Select model and voice to start</p>
         </div>
 
-        {/* Model Selection */}
-        <div className="space-y-4">
-          <h2 className="text-xl font-semibold flex items-center gap-2">
-            <span className="text-blue-400">1.</span> Select Model
-          </h2>
-          <div className="grid gap-3">
-            {Object.entries(options.models).map(([key, model]) => (
-              <button
-                key={key}
-                onClick={() => setSelectedModel(key)}
-                className={`
-                  p-4 rounded-lg border-2 text-left transition-all relative
-                  ${selectedModel === key
-                    ? 'border-blue-500 bg-blue-500/10 shadow-lg shadow-blue-500/20'
-                    : 'border-zinc-700 bg-zinc-900/50 hover:border-zinc-600 hover:bg-zinc-900'
-                  }
-                `}
-              >
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex-1">
-                    <div className="font-semibold text-base sm:text-lg flex items-center gap-2 font-mono">
-                      {key}
-                      {model.recommended && (
-                        <span className="text-xs px-2 py-0.5 bg-green-500/20 text-green-400 rounded-full border border-green-500/30 font-sans">
-                          Recommended
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-sm text-zinc-400 mt-2">{model.description}</div>
+        {/* Selection Card */}
+        <div className="bg-zinc-900/80 border border-zinc-800 rounded-xl p-6 space-y-6">
+          {/* Model Selection - Vertical List */}
+          <div className="space-y-3">
+            <label className="text-xs font-medium text-zinc-500 uppercase tracking-wider">
+              Model
+            </label>
+            <div className="space-y-2">
+              {Object.entries(options.models).map(([key, model]) => (
+                <button
+                  key={key}
+                  onClick={() => setSelectedModel(key)}
+                  className={`
+                    w-full px-4 py-3 rounded-lg border text-left transition-all flex items-center gap-3
+                    ${selectedModel === key
+                      ? 'border-blue-500 bg-blue-500/10'
+                      : 'border-zinc-700 hover:border-zinc-600 hover:bg-zinc-800/50'
+                    }
+                  `}
+                >
+                  {/* Radio indicator */}
+                  <div className={`
+                    w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0
+                    ${selectedModel === key ? 'border-blue-500' : 'border-zinc-600'}
+                  `}>
+                    {selectedModel === key && (
+                      <div className="w-2 h-2 rounded-full bg-blue-500" />
+                    )}
                   </div>
-                  {selectedModel === key && (
-                    <CheckCircle2 className="w-6 h-6 text-blue-400 flex-shrink-0" />
+                  <span className={`font-mono text-sm ${selectedModel === key ? 'text-blue-300' : 'text-zinc-300'}`}>
+                    {key}
+                  </span>
+                  {model.recommended && (
+                    <span className="text-xs px-2 py-0.5 bg-green-500/20 text-green-400 rounded-full border border-green-500/30 flex-shrink-0 ml-auto">
+                      Recommended
+                    </span>
                   )}
-                </div>
-              </button>
-            ))}
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
 
-        {/* Voice Selection - Grouped by Personality */}
-        <div className="space-y-4">
-          <h2 className="text-xl font-semibold flex items-center gap-2">
-            <span className="text-green-400">2.</span> Select Voice
-          </h2>
-          <div className="space-y-6">
-            {Object.entries(options.voiceGroups).map(([groupKey, group]) => {
-              const voiceEntries = Object.entries(group.voices);
-              const isExpanded = expandedGroups.has(groupKey);
-              const visibleVoices = isExpanded ? voiceEntries : voiceEntries.slice(0, 3);
-              const hasMore = voiceEntries.length > 3;
+          {/* Divider */}
+          <div className="border-t border-zinc-800" />
 
-              return (
-                <div key={groupKey}>
-                  <h3 className="text-sm font-medium text-zinc-400 mb-3 uppercase tracking-wide">
-                    {group.label}
-                  </h3>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-                    {visibleVoices.map(([voiceName, voice]) => (
-                      <button
-                        key={voiceName}
-                        onClick={() => setSelectedVoice(voiceName)}
-                        className={`
-                          p-3 rounded-lg border text-left transition-all relative
-                          ${selectedVoice === voiceName
-                            ? 'border-green-500 bg-green-500/10 shadow-md shadow-green-500/20'
-                            : 'border-zinc-700 bg-zinc-900/50 hover:border-zinc-600 hover:bg-zinc-900'
-                          }
-                        `}
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="flex-1 min-w-0">
-                            <div className="font-semibold text-sm truncate">{voiceName}</div>
-                            <div className="text-xs text-zinc-500 mt-0.5">{voice.personality}</div>
-                            <div className="text-xs text-zinc-400 mt-1">{voice.description}</div>
-                          </div>
-                          {selectedVoice === voiceName && (
-                            <CheckCircle2 className="w-5 h-5 text-green-400 flex-shrink-0" />
-                          )}
-                        </div>
-                      </button>
+          {/* Voice Selection - Dropdown */}
+          <div className="space-y-3">
+            <label className="text-xs font-medium text-zinc-500 uppercase tracking-wider">
+              Voice
+            </label>
+            <div className="relative">
+              <select
+                value={selectedVoice}
+                onChange={(e) => setSelectedVoice(e.target.value)}
+                className="w-full px-4 py-3 rounded-lg border border-zinc-700 bg-zinc-800 text-zinc-100 appearance-none cursor-pointer hover:border-zinc-600 focus:border-green-500 focus:outline-none focus:ring-1 focus:ring-green-500/50 transition-colors"
+              >
+                {Object.entries(options.voiceGroups).map(([groupKey, group]) => (
+                  <optgroup key={groupKey} label={group.label}>
+                    {Object.entries(group.voices).map(([voiceName, voice]) => (
+                      <option key={voiceName} value={voiceName}>
+                        {voiceName} — {voice.personality}
+                      </option>
                     ))}
-                  </div>
-                  {hasMore && (
-                    <button
-                      onClick={() => toggleGroupExpansion(groupKey)}
-                      className="mt-2 text-xs text-zinc-500 hover:text-zinc-300 transition-colors flex items-center gap-1"
-                    >
-                      {isExpanded ? (
-                        <>Show less</>
-                      ) : (
-                        <>Show {voiceEntries.length - 3} more</>
-                      )}
-                    </button>
-                  )}
-                </div>
-              );
-            })}
+                  </optgroup>
+                ))}
+              </select>
+              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 text-zinc-500 pointer-events-none" />
+            </div>
+            {selectedVoiceDetails && (
+              <p className="text-xs text-zinc-500 italic">
+                &ldquo;{selectedVoiceDetails.description}&rdquo;
+              </p>
+            )}
           </div>
         </div>
 
         {/* Start Button */}
-        <div className="pt-4 space-y-4">
-          <button
-            onClick={handleStart}
-            disabled={!selectedModel || !selectedVoice}
-            className="w-full py-6 text-lg font-semibold bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-500 hover:to-blue-500 transition-all shadow-lg shadow-purple-500/30 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-          >
-            <Sparkles className="w-5 h-5" />
-            Start Session
-          </button>
-
-          {/* Selected Summary */}
-          {selectedModel && selectedVoice && (
-            <div className="text-center space-y-1 animate-in fade-in duration-300">
-              <div className="text-sm text-zinc-500">
-                Starting with{' '}
-                <span className="text-blue-400 font-medium font-mono">
-                  {selectedModel}
-                </span>
-                {' '}using{' '}
-                <span className="text-green-400 font-medium">{selectedVoice}</span> voice
-              </div>
-            </div>
-          )}
-        </div>
+        <button
+          onClick={handleStart}
+          disabled={!selectedModel || !selectedVoice}
+          className="w-full py-4 text-base font-semibold bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-500 hover:to-blue-500 transition-all shadow-lg shadow-purple-500/30 rounded-xl disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+        >
+          <Sparkles className="w-5 h-5" />
+          Start Session
+        </button>
       </div>
     </div>
   );

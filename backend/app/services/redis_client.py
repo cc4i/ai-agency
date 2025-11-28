@@ -319,6 +319,88 @@ class RedisClient:
         await pubsub.subscribe(*channels)
         return pubsub
 
+    # Remote Agent Configuration Management
+
+    async def save_remote_agent_config(
+        self, agent_id: str, config: Dict[str, Any]
+    ) -> None:
+        """
+        Save remote agent configuration to Redis.
+
+        Schema:
+        - remote_agent:{agent_id}:config -> Hash {agent_card_url, api_key_ref, ...}
+        """
+        mapping = {}
+        for key, value in config.items():
+            if value is None:
+                mapping[key] = ""
+            elif isinstance(value, (list, dict)):
+                mapping[key] = json.dumps(value)
+            elif isinstance(value, bool):
+                mapping[key] = "true" if value else "false"
+            else:
+                mapping[key] = str(value)
+
+        await self.client.hset(  # type: ignore
+            f"remote_agent:{agent_id}:config", mapping=mapping
+        )
+
+        # Add to list of remote agents
+        await self.client.sadd("remote_agents", agent_id)  # type: ignore
+
+    async def get_remote_agent_config(self, agent_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve remote agent configuration from Redis."""
+        data = await self.client.hgetall(f"remote_agent:{agent_id}:config")  # type: ignore
+        if not data:
+            return None
+
+        # Parse JSON fields and booleans
+        parsed = {}
+        for key, value in data.items():
+            if value == "":
+                parsed[key] = None
+            elif value in ("true", "false"):
+                parsed[key] = value == "true"
+            else:
+                try:
+                    parsed[key] = json.loads(value)
+                except (json.JSONDecodeError, TypeError):
+                    parsed[key] = value
+
+        return parsed
+
+    async def delete_remote_agent_config(self, agent_id: str) -> bool:
+        """Delete remote agent configuration from Redis."""
+        # Remove config
+        deleted = await self.client.delete(f"remote_agent:{agent_id}:config")  # type: ignore
+
+        # Remove from list
+        await self.client.srem("remote_agents", agent_id)  # type: ignore
+
+        return deleted > 0
+
+    async def list_remote_agent_configs(self) -> List[str]:
+        """List all registered remote agent IDs."""
+        agents = await self.client.smembers("remote_agents")  # type: ignore
+        return list(agents) if agents else []
+
+    async def save_agent_override(self, local_id: str, remote_id: str) -> None:
+        """Save override mapping (local agent -> remote agent)."""
+        await self.client.hset("agent_overrides", local_id, remote_id)  # type: ignore
+
+    async def get_agent_override(self, local_id: str) -> Optional[str]:
+        """Get remote agent ID that overrides a local agent."""
+        return await self.client.hget("agent_overrides", local_id)  # type: ignore
+
+    async def delete_agent_override(self, local_id: str) -> None:
+        """Delete an agent override mapping."""
+        await self.client.hdel("agent_overrides", local_id)  # type: ignore
+
+    async def get_all_agent_overrides(self) -> Dict[str, str]:
+        """Get all agent override mappings."""
+        data = await self.client.hgetall("agent_overrides")  # type: ignore
+        return dict(data) if data else {}
+
 
 # Global Redis client instance
 redis_client = RedisClient()

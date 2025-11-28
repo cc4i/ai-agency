@@ -21,6 +21,7 @@ import { TranscriptDisplay } from './TranscriptDisplay';
 import { ConfigurationScreen } from './ConfigurationScreen';
 import { ChatInputBar } from './ChatInputBar';
 import { CollapsibleAnnouncements } from './CollapsibleAnnouncements';
+import { AddAgentModal } from './AddAgentModal';
 import { useProjectStore } from '@/stores/useProjectStore';
 
 export default function WorkspaceClient() {
@@ -32,6 +33,9 @@ export default function WorkspaceClient() {
   const [configComplete, setConfigComplete] = useState(false);
   const [selectedModel, setSelectedModel] = useState<string>('');
   const [selectedVoice, setSelectedVoice] = useState<string>('');
+
+  // Agent modal state
+  const [showAddAgentModal, setShowAddAgentModal] = useState(false);
 
   const { reset } = useProjectStore();
 
@@ -141,6 +145,13 @@ export default function WorkspaceClient() {
         onReconfigure={handleReconfigure}
         selectedModel={selectedModel}
         selectedVoice={selectedVoice}
+        onAddAgent={() => setShowAddAgentModal(true)}
+      />
+
+      {/* Add Agent Modal */}
+      <AddAgentModal
+        isOpen={showAddAgentModal}
+        onClose={() => setShowAddAgentModal(false)}
       />
 
       {/* Main Content Area */}

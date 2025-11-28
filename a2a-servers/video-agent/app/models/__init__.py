@@ -1,0 +1,43 @@
+"""A2A protocol and video models."""
+
+from app.models.a2a import (
+    AgentCard,
+    AgentCapabilities,
+    AgentProvider,
+    AgentSkill,
+    Artifact,
+    DataPart,
+    FilePart,
+    JSONRPCError,
+    JSONRPCRequest,
+    JSONRPCResponse,
+    Message,
+    Part,
+    SecurityScheme,
+    SSEEvent,
+    Task,
+    TaskState,
+    TaskStatus,
+    TextPart,
+)
+
+__all__ = [
+    "AgentCard",
+    "AgentCapabilities",
+    "AgentProvider",
+    "AgentSkill",
+    "Artifact",
+    "DataPart",
+    "FilePart",
+    "JSONRPCError",
+    "JSONRPCRequest",
+    "JSONRPCResponse",
+    "Message",
+    "Part",
+    "SecurityScheme",
+    "SSEEvent",
+    "Task",
+    "TaskState",
+    "TaskStatus",
+    "TextPart",
+]

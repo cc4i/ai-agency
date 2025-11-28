@@ -182,7 +182,80 @@ All A2A communication uses **JSON-RPC 2.0** over HTTPS:
 }
 ```
 
-#### tasks/get — Poll Task Status
+#### message/stream — Submit Task with SSE Streaming (Preferred)
+
+For real-time progress updates, use the streaming endpoint. This is the **preferred method** when the agent supports `streaming: true` in its capabilities.
+
+**Request:**
+```
+POST /a2a/stream
+Content-Type: application/json
+Accept: text/event-stream
+
+{
+  "jsonrpc": "2.0",
+  "id": "req_001",
+  "method": "message/stream",
+  "params": {
+    "message": {
+      "messageId": "msg_abc123",
+      "role": "user",
+      "parts": [
+        {
+          "type": "text",
+          "text": "Create a 15-second video for the Aura Smart Sneaker campaign"
+        }
+      ]
+    },
+    "configuration": {
+      "acceptedOutputModes": ["video/mp4"]
+    }
+  }
+}
+```
+
+**SSE Response Stream:**
+```
+event: task_created
+data: {"id": "task_xyz789", "contextId": "ctx_001", "status": {"state": "submitted", "timestamp": "2025-01-15T10:30:00Z"}}
+
+event: task_status
+data: {"id": "task_xyz789", "status": {"state": "working", "progress": 0, "message": "Initializing video generation..."}}
+
+event: task_status
+data: {"id": "task_xyz789", "status": {"state": "working", "progress": 25, "message": "Generating scene 1/4..."}}
+
+event: task_status
+data: {"id": "task_xyz789", "status": {"state": "working", "progress": 50, "message": "Generating scene 2/4..."}}
+
+event: task_status
+data: {"id": "task_xyz789", "status": {"state": "working", "progress": 75, "message": "Rendering final video..."}}
+
+event: task_artifact
+data: {"id": "task_xyz789", "artifact": {"id": "art_001", "name": "aura_hero.mp4", "mimeType": "video/mp4", "parts": [{"type": "file", "uri": "https://storage.example.com/aura_hero.mp4"}]}}
+
+event: task_completed
+data: {"id": "task_xyz789", "status": {"state": "completed", "timestamp": "2025-01-15T10:32:00Z"}, "artifacts": [...]}
+
+event: done
+data: [DONE]
+```
+
+**SSE Event Types:**
+
+| Event | Description | Data |
+|-------|-------------|------|
+| `task_created` | Task accepted and queued | Task with initial status |
+| `task_status` | Progress update | Task ID, state, progress %, message |
+| `task_artifact` | Artifact generated (can be multiple) | Task ID, single artifact |
+| `task_input_required` | Agent needs user input | Task ID, critique message |
+| `task_completed` | Task finished successfully | Full task with all artifacts |
+| `task_failed` | Task encountered error | Task ID, error details |
+| `done` | Stream ended | `[DONE]` marker |
+
+#### tasks/get — Poll Task Status (Fallback)
+
+Use this method when streaming is not available or as a fallback.
 
 **Request:**
 ```json
@@ -440,10 +513,12 @@ async def get_agent_card(self, agent_id: str) -> AgentCard:
 
 ### 5.1 RemoteA2AAgentAdapter
 
-The adapter inherits from `AgentBase` and uses A2A protocol internally:
+The adapter inherits from `AgentBase` and uses A2A protocol internally. It supports both **SSE streaming** (preferred) and **polling** (fallback) modes based on the remote agent's capabilities.
 
 ```python
-from typing import Any, Dict, Optional
+from typing import Any, AsyncIterator, Callable, Dict, Optional
+import asyncio
+import uuid
 import httpx
 from app.agents.base import AgentBase
 from app.models.assets import CritiqueResult
@@ -453,6 +528,11 @@ class RemoteA2AAgentAdapter(AgentBase):
     """
     A2A-compliant adapter that implements AgentBase interface
     while communicating with remote agents via JSON-RPC 2.0.
+
+    Supports:
+    - SSE streaming for real-time progress updates (preferred)
+    - Polling fallback when streaming unavailable
+    - Automatic capability detection from Agent Card
     """
 
     def __init__(
@@ -460,17 +540,31 @@ class RemoteA2AAgentAdapter(AgentBase):
         agent_id: str,
         agent_card_url: str,
         api_key: str,
-        timeout: dict = None
+        timeout: dict = None,
+        on_progress: Optional[Callable[[str, int, str], None]] = None
     ):
+        """
+        Initialize adapter.
+
+        Args:
+            agent_id: Local agent ID for this adapter
+            agent_card_url: URL to fetch Agent Card
+            api_key: API key for authentication
+            timeout: Timeout configuration
+            on_progress: Optional callback for progress updates (task_id, progress, message)
+        """
         super().__init__(agent_id)
         self.agent_card_url = agent_card_url
+        self._api_key = api_key
         self._agent_card: Optional[AgentCard] = None
+        self._timeout = timeout or {}
+        self._on_progress = on_progress
         self._client = httpx.AsyncClient(
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=httpx.Timeout(
-                connect=timeout.get("connect", 10),
-                read=timeout.get("read", 300),
-                pool=timeout.get("total", 600)
+                connect=self._timeout.get("connect", 10),
+                read=self._timeout.get("read", 300),
+                pool=self._timeout.get("total", 600)
             )
         )
         self._request_id = 0
@@ -482,6 +576,12 @@ class RemoteA2AAgentAdapter(AgentBase):
             response.raise_for_status()
             self._agent_card = AgentCard.model_validate(response.json())
         return self._agent_card
+
+    def _supports_streaming(self) -> bool:
+        """Check if remote agent supports SSE streaming."""
+        if self._agent_card is None:
+            return False
+        return self._agent_card.capabilities.get("streaming", False)
 
     async def _jsonrpc_call(self, method: str, params: dict) -> dict:
         """Make JSON-RPC 2.0 call to remote agent."""
@@ -504,14 +604,137 @@ class RemoteA2AAgentAdapter(AgentBase):
 
         return result.get("result", {})
 
-    async def execute(
+    async def _stream_sse(
+        self, message: dict, config: dict
+    ) -> AsyncIterator[dict]:
+        """
+        Stream task execution via SSE.
+
+        Yields SSE events as they arrive:
+        - task_created: Initial task info
+        - task_status: Progress updates
+        - task_artifact: Generated artifacts
+        - task_input_required: Needs user input
+        - task_completed: Final result
+        - task_failed: Error occurred
+        """
+        card = await self._ensure_agent_card()
+        self._request_id += 1
+
+        # SSE endpoint (typically /a2a/stream)
+        stream_url = card.url.replace("/a2a", "/a2a/stream")
+
+        payload = {
+            "jsonrpc": "2.0",
+            "id": f"req_{self._request_id}",
+            "method": "message/stream",
+            "params": {
+                "message": message,
+                "configuration": config
+            }
+        }
+
+        async with self._client.stream(
+            "POST",
+            stream_url,
+            json=payload,
+            headers={
+                "Accept": "text/event-stream",
+                "Authorization": f"Bearer {self._api_key}"
+            }
+        ) as response:
+            response.raise_for_status()
+
+            event_type = None
+            data_buffer = []
+
+            async for line in response.aiter_lines():
+                line = line.strip()
+
+                if line.startswith("event:"):
+                    event_type = line[6:].strip()
+                elif line.startswith("data:"):
+                    data_buffer.append(line[5:].strip())
+                elif line == "" and event_type and data_buffer:
+                    # Empty line = end of event
+                    data_str = "\n".join(data_buffer)
+                    if data_str != "[DONE]":
+                        import json
+                        yield {"event": event_type, "data": json.loads(data_str)}
+                    event_type = None
+                    data_buffer = []
+
+    async def _execute_with_streaming(
         self, task: Dict[str, Any], context: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """
-        Execute task via A2A message/send.
-        Polls until task reaches terminal state.
-        """
-        # Build A2A message with parts
+        """Execute task using SSE streaming for real-time updates."""
+        message = {
+            "messageId": f"msg_{uuid.uuid4()}",
+            "role": "user",
+            "parts": [
+                {"type": "text", "text": task.get("description", "")},
+                {"type": "data", "mimeType": "application/json", "data": {
+                    "task": task,
+                    "context": context
+                }}
+            ]
+        }
+
+        config = {"acceptedOutputModes": task.get("output_modes", ["application/json"])}
+
+        task_id = None
+        artifacts = []
+        final_result = None
+
+        async for event in self._stream_sse(message, config):
+            event_type = event["event"]
+            data = event["data"]
+
+            if event_type == "task_created":
+                task_id = data["id"]
+
+            elif event_type == "task_status":
+                # Report progress via callback
+                if self._on_progress:
+                    progress = data.get("status", {}).get("progress", 0)
+                    msg = data.get("status", {}).get("message", "")
+                    self._on_progress(task_id, progress, msg)
+
+            elif event_type == "task_artifact":
+                artifacts.append(data["artifact"])
+
+            elif event_type == "task_input_required":
+                # Agent needs user input (critique workflow)
+                return {
+                    "status": "needs_revision",
+                    "task_id": task_id,
+                    "critique": self._extract_critique(data.get("status", {}).get("message", {}))
+                }
+
+            elif event_type == "task_completed":
+                final_result = data
+                # Use artifacts from stream if available
+                if not artifacts and "artifacts" in data:
+                    artifacts = data["artifacts"]
+
+            elif event_type == "task_failed":
+                error_msg = data.get("status", {}).get("message", "Task failed")
+                raise A2ATaskError(error_msg)
+
+        if final_result:
+            return {
+                "status": "completed",
+                "artifacts": artifacts,
+                "provider": "remote",
+                "agent_id": self.agent_id
+            }
+
+        raise A2ATaskError("Stream ended without completion event")
+
+    async def _execute_with_polling(
+        self, task: Dict[str, Any], context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Execute task using polling fallback."""
         message = {
             "messageId": f"msg_{uuid.uuid4()}",
             "role": "user",
@@ -537,6 +760,14 @@ class RemoteA2AAgentAdapter(AgentBase):
             await asyncio.sleep(2)
             result = await self._jsonrpc_call("tasks/get", {"taskId": task_id})
 
+            # Report progress if available
+            if self._on_progress and "progress" in result.get("status", {}):
+                self._on_progress(
+                    task_id,
+                    result["status"]["progress"],
+                    result["status"].get("message", "")
+                )
+
         # Handle terminal states
         if result["status"]["state"] == "completed":
             return {
@@ -546,7 +777,6 @@ class RemoteA2AAgentAdapter(AgentBase):
                 "agent_id": self.agent_id
             }
         elif result["status"]["state"] == "input-required":
-            # Map to critique workflow
             return {
                 "status": "needs_revision",
                 "task_id": task_id,
@@ -556,6 +786,22 @@ class RemoteA2AAgentAdapter(AgentBase):
             raise A2ATaskError(result["status"].get("message", "Task failed"))
         else:
             raise A2ATaskError(f"Unexpected state: {result['status']['state']}")
+
+    async def execute(
+        self, task: Dict[str, Any], context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Execute task via A2A protocol.
+
+        Automatically uses SSE streaming if supported by remote agent,
+        otherwise falls back to polling.
+        """
+        await self._ensure_agent_card()
+
+        if self._supports_streaming():
+            return await self._execute_with_streaming(task, context)
+        else:
+            return await self._execute_with_polling(task, context)
 
     async def critique(
         self, result: Dict[str, Any], brief: Dict[str, Any]
