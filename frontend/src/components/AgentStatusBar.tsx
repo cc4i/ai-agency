@@ -40,9 +40,10 @@ interface AgentStatusBarProps {
   selectedModel?: string;
   selectedVoice?: string;
   onAddAgent?: () => void;
+  isConnected?: boolean;
 }
 
-export function AgentStatusBar({ onReconfigure, selectedModel, selectedVoice, onAddAgent }: AgentStatusBarProps) {
+export function AgentStatusBar({ onReconfigure, selectedModel, selectedVoice, onAddAgent, isConnected = false }: AgentStatusBarProps) {
   const { agentStatuses } = useProjectStore();
   const { agents, fetchAgents, circuitBreakerStates } = useAgentStore();
   const [showRemoteIndicators, setShowRemoteIndicators] = useState(false);
@@ -55,65 +56,44 @@ export function AgentStatusBar({ onReconfigure, selectedModel, selectedVoice, on
   // Determine which agents to display (use API agents if available, else defaults)
   const displayAgents = agents.length > 0
     ? agents.filter(a => a.is_active).map(a => ({
-        id: a.agent_id,
-        name: a.name,
-        icon: AGENT_ICONS[a.agent_id] || '🤖',
-        provider: a.provider,
-        status: a.status,
-        overrides: a.overrides,
-        overridden_by: a.overridden_by,
-      }))
-    : DEFAULT_AGENTS.map(a => ({ ...a, provider: 'local' as const, status: 'ready' as const }));
+      id: a.agent_id,
+      name: a.name,
+      icon: AGENT_ICONS[a.agent_id] || '🤖',
+      provider: a.provider,
+      status: a.status,
+      overrides: a.overrides,
+      overridden_by: a.overridden_by,
+    }))
+    : DEFAULT_AGENTS.map(a => ({ ...a, provider: 'local' as const, status: 'ready' as const, overrides: undefined }));
 
   // Count remote agents
   const remoteCount = agents.filter(a => a.provider === 'remote').length;
 
   return (
-    <div className="border-b border-zinc-800 bg-gradient-to-r from-purple-950/30 via-blue-950/30 to-purple-950/30">
-      <div className="px-3 py-3 space-y-3">
-        {/* Header Row */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Sparkles className="w-10 h-10 text-purple-400" />
-            <div>
-              <h2 className="text-2xl font-semibold text-zinc-100">
-                AI Agency Hub
-              </h2>
-              <p className="text-xs text-zinc-400">
-                Your creative team is ready to bring your campaign to life
-                {remoteCount > 0 && (
-                  <span className="ml-2 text-purple-400">
-                    ({remoteCount} remote agent{remoteCount > 1 ? 's' : ''})
-                  </span>
-                )}
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="flex flex-col items-end">
-              <div className="text-xs text-zinc-400 font-mono">
-                {selectedModel || 'gemini-live-2.5-flash'}
-              </div>
-              {selectedVoice && (
-                <div className="text-xs text-zinc-500">
-                  Voice: {selectedVoice}
-                </div>
-              )}
-            </div>
-            {onReconfigure && (
-              <button
-                onClick={onReconfigure}
-                className="p-1.5 rounded-lg hover:bg-zinc-800 transition-colors group"
-                title="Change model and voice settings"
-              >
-                <Settings className="w-4 h-4 text-zinc-500 group-hover:text-zinc-300 transition-colors" />
-              </button>
-            )}
-          </div>
+    <div className="border-b border-zinc-800/50 bg-gradient-to-r from-zinc-950 via-zinc-900/95 to-zinc-950 h-16 flex items-center px-6 justify-between">
+      {/* Left: Identity */}
+      <div className="flex items-center gap-3 min-w-[280px]">
+        <div className="p-2.5 bg-purple-500/15 rounded-xl">
+          <Sparkles className="w-6 h-6 text-purple-400" />
         </div>
+        <div>
+          <h1 className="text-xl font-bold bg-gradient-to-r from-purple-400 via-pink-400 to-blue-400 bg-clip-text text-transparent leading-tight">
+            AI Agency Hub
+          </h1>
+          <p className="text-xs text-zinc-500 leading-tight">
+            Multimodal Creative Team
+            {remoteCount > 0 && (
+              <span className="ml-1 text-purple-400">
+                +{remoteCount} remote
+              </span>
+            )}
+          </p>
+        </div>
+      </div>
 
-        {/* Agent Status Row */}
-        <div className="flex gap-3 flex-wrap items-center">
+      {/* Center: Agent Status Row */}
+      <div className="flex-1 flex justify-center overflow-x-auto px-6 no-scrollbar">
+        <div className="flex items-center gap-3">
           {displayAgents.map((agent) => {
             const taskStatus = agentStatuses[agent.id];
             const cbState = circuitBreakerStates[agent.id];
@@ -130,18 +110,53 @@ export function AgentStatusBar({ onReconfigure, selectedModel, selectedVoice, on
               />
             );
           })}
+
           {/* Add Remote Agent Button */}
           {onAddAgent && (
             <button
               onClick={onAddAgent}
-              className="flex items-center gap-1.5 px-2 py-1 rounded-lg border border-dashed border-purple-500/50 hover:border-purple-400 hover:bg-purple-500/10 transition-colors group"
+              className="flex items-center gap-2 px-4 py-2 rounded-full border border-dashed border-zinc-700 hover:border-purple-500/50 hover:bg-purple-500/10 transition-all group ml-3"
               title="Add remote A2A agent"
             >
-              <Plus className="w-4 h-4 text-purple-400 group-hover:text-purple-300 transition-colors" />
-              <Cloud className="w-4 h-4 text-purple-400 group-hover:text-purple-300 transition-colors" />
-              <span className="text-xs text-purple-400 group-hover:text-purple-300">Add Agent</span>
+              <Plus className="w-4 h-4 text-zinc-500 group-hover:text-purple-400 transition-colors" />
+              <span className="text-sm font-medium text-zinc-500 group-hover:text-purple-400">Add Agent</span>
             </button>
           )}
+        </div>
+      </div>
+
+      {/* Right: Configuration */}
+      <div className="flex items-center gap-4 min-w-[220px] justify-end">
+        <div className="flex flex-col items-end hidden md:flex">
+          <div className="text-xs font-medium text-zinc-300 font-mono">
+            {selectedModel || 'No model selected'}
+          </div>
+          {selectedVoice && (
+            <div className="text-[10px] text-zinc-500">
+              Voice: {selectedVoice}
+            </div>
+          )}
+        </div>
+
+        <div className="h-8 w-px bg-zinc-800/50 hidden md:block" />
+
+        <div className="flex items-center gap-2">
+          {onReconfigure && (
+            <button
+              onClick={onReconfigure}
+              className="p-2 rounded-lg hover:bg-zinc-800 text-zinc-500 hover:text-white transition-colors"
+              title="Settings"
+            >
+              <Settings className="w-4 h-4" />
+            </button>
+          )}
+
+          <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-zinc-900/80 border ${isConnected ? 'border-green-800/50' : 'border-red-800/50'}`}>
+            <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
+            <span className={`text-xs font-medium ${isConnected ? 'text-zinc-400' : 'text-red-400'}`}>
+              {isConnected ? 'Live' : 'Offline'}
+            </span>
+          </div>
         </div>
       </div>
     </div>
@@ -162,46 +177,27 @@ function AgentStatus({ name, icon, status, currentTask, provider, circuitBreaker
   const isRemote = provider === 'remote';
   const isCircuitOpen = circuitBreakerState === 'open';
   const isCircuitHalfOpen = circuitBreakerState === 'half_open';
+  const isActive = status === 'thinking';
+  const isComplete = status === 'complete';
 
   const getStatusIcon = () => {
     // Circuit breaker takes precedence for remote agents
     if (isRemote && isCircuitOpen) {
-      return <WifiOff className="w-4 h-4 text-red-400" />;
+      return <WifiOff className="w-3.5 h-3.5 text-red-400" />;
     }
     if (isRemote && isCircuitHalfOpen) {
-      return <AlertTriangle className="w-4 h-4 text-yellow-400" />;
+      return <AlertTriangle className="w-3.5 h-3.5 text-yellow-400" />;
     }
 
     switch (status) {
       case 'thinking':
-        return <Loader2 className="w-4 h-4 text-blue-400 animate-spin" />;
+        return <Loader2 className="w-3.5 h-3.5 text-purple-400 animate-spin" />;
       case 'complete':
-        return <CheckCircle2 className="w-4 h-4 text-green-400" />;
+        return <CheckCircle2 className="w-3.5 h-3.5 text-green-400" />;
       case 'error':
-        return <XCircle className="w-4 h-4 text-red-400" />;
+        return <XCircle className="w-3.5 h-3.5 text-red-400" />;
       default:
-        return <Circle className="w-4 h-4 text-zinc-600" />;
-    }
-  };
-
-  const getStatusColor = () => {
-    // Circuit breaker states
-    if (isRemote && isCircuitOpen) {
-      return 'border-red-500/50 bg-red-500/10';
-    }
-    if (isRemote && isCircuitHalfOpen) {
-      return 'border-yellow-500/50 bg-yellow-500/10';
-    }
-
-    switch (status) {
-      case 'thinking':
-        return 'border-blue-500/50 bg-blue-500/10';
-      case 'complete':
-        return 'border-green-500/50 bg-green-500/10';
-      case 'error':
-        return 'border-red-500/50 bg-red-500/10';
-      default:
-        return isRemote ? 'border-purple-700 bg-purple-900/20' : 'border-zinc-700 bg-zinc-900';
+        return null;
     }
   };
 
@@ -218,35 +214,37 @@ function AgentStatus({ name, icon, status, currentTask, provider, circuitBreaker
   return (
     <div
       className={cn(
-        'flex items-center gap-2 px-2 py-1 rounded-lg border transition-all relative',
-        getStatusColor()
+        'flex items-center gap-2 px-3 py-2 rounded-full border transition-all relative',
+        // Base styles
+        'bg-zinc-900/80',
+        // Status-based styles with glow effect
+        isActive && 'border-purple-500/60 bg-purple-900/30 shadow-[0_0_12px_rgba(168,85,247,0.3)]',
+        isComplete && 'border-green-500/40 bg-green-900/20',
+        status === 'error' && 'border-red-500/40 bg-red-900/20',
+        status === 'idle' && 'border-zinc-700/50',
+        // Circuit breaker overrides
+        isRemote && isCircuitOpen && 'border-red-500/50 bg-red-900/20',
+        isRemote && isCircuitHalfOpen && 'border-yellow-500/50 bg-yellow-900/20',
+        // Remote indicator
+        isRemote && status === 'idle' && 'border-purple-700/50 bg-purple-900/10'
       )}
       title={getTooltip()}
     >
       {/* Remote badge */}
       {isRemote && (
-        <div className="absolute -top-1 -right-1">
+        <div className="absolute -top-1.5 -right-1.5">
           <Cloud className="w-3 h-3 text-purple-400" />
         </div>
       )}
 
       <span className="text-base">{icon}</span>
-      <div className="flex flex-col">
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-medium text-zinc-300">{name}</span>
-          {getStatusIcon()}
-        </div>
-        {/* Show current task or circuit breaker status */}
-        {isCircuitOpen && (
-          <span className="text-xs text-red-400 max-w-32 truncate">Failover active</span>
-        )}
-        {isCircuitHalfOpen && (
-          <span className="text-xs text-yellow-400 max-w-32 truncate">Recovering...</span>
-        )}
-        {currentTask && status === 'thinking' && !isCircuitOpen && !isCircuitHalfOpen && (
-          <span className="text-xs text-zinc-500 max-w-32 truncate">{currentTask}</span>
-        )}
-      </div>
+      <span className={cn(
+        'text-xs font-medium',
+        isActive ? 'text-purple-200' : 'text-zinc-400'
+      )}>
+        {name}
+      </span>
+      {getStatusIcon()}
     </div>
   );
 }

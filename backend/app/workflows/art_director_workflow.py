@@ -43,7 +43,8 @@ class ArtDirectorWorkflow:
 
     def __init__(self):
         """Initialize workflow."""
-        pass  # No agent setup needed
+        from app.services.google_ai_client import ImagenClient
+        self.google_ai_client = ImagenClient()
 
     async def _generate_prompt(
         self,
@@ -801,6 +802,82 @@ Generate the refined image maintaining what works while implementing the request
         logger.info(f"Batch refinement complete: {len(successful_refinements)}/{len(all_images)} successful")
 
         return successful_refinements
+
+    async def generate_concepts(
+        self,
+        reference_image_data: str,
+        instruction: str,
+        product_context: Dict[str, Any],
+        num_concepts: int = 3
+    ) -> List[Dict[str, Any]]:
+        """
+        Generate fast concept sketches based on a reference image.
+        
+        Used for the concept validation loop - generates low-fidelity variations
+        to confirm style/direction before creating final hero images.
+        
+        Args:
+            reference_image_data: Base64-encoded reference image
+            instruction: User's instruction for the concepts
+            product_context: Product details from brief
+            num_concepts: Number of concept variations to generate (default 3)
+            
+        Returns:
+            List of ImageAsset dicts with type="concept"
+        """
+        logger.info(f"Generating {num_concepts} concept sketches based on reference")
+        
+        # Build concept generation prompt
+        product_name = product_context.get("product_name", "product")
+        theme = product_context.get("theme", "")
+        
+        prompt = f"""Create a CONCEPT SKETCH for {product_name}.
+
+Style: Loose, artistic concept art - NOT a final polished image.
+Reference: Use the provided image as visual inspiration.
+Instruction: {instruction}
+Theme: {theme}
+
+Generate a quick concept sketch that captures the essence and style direction.
+Focus on composition and mood rather than fine details."""
+
+        try:
+            # Use Imagen for fast generation
+            # Note: Current ImagenClient wrapper doesn't support reference_images yet
+            # We'll rely on the prompt description for now
+            
+            images_bytes = await self.google_ai_client.generate_images(
+                prompt=prompt,
+                number_of_images=num_concepts,
+                aspect_ratio="1:1",
+            )
+            
+            concepts = []
+            import base64
+            import time
+            
+            for i, img_bytes in enumerate(images_bytes):
+                img_b64 = base64.b64encode(img_bytes).decode('utf-8')
+                concept = {
+                    "asset_id": f"concept_{int(time.time() * 1000)}_{i}",
+                    "url": f"data:image/png;base64,{img_b64}",
+                    "type": "concept",
+                    "prompt": prompt,
+                    "generation_number": i + 1,
+                    "timestamp": time.time(),
+                    "metadata": {
+                        "is_concept": True,
+                        "reference_based": True
+                    }
+                }
+                concepts.append(concept)
+            
+            logger.info(f"Generated {len(concepts)} concept sketches")
+            return concepts
+            
+        except Exception as e:
+            logger.error(f"Error generating concepts: {e}", exc_info=True)
+            return []
 
     async def rollback_to_version(
         self,

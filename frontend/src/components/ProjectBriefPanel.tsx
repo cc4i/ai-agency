@@ -24,6 +24,11 @@ export function ProjectBriefPanel() {
     if (changedFields.length > 0) {
       setHighlightedFields(new Set(changedFields));
 
+      // Debug: Log when reference_images changes
+      if (changedFields.includes('reference_images')) {
+        console.log('[ProjectBriefPanel] reference_images changed!', brief?.reference_images?.length || 0);
+      }
+
       // Clear highlights after 2 seconds
       const timeout = setTimeout(() => {
         setHighlightedFields(new Set());
@@ -32,12 +37,12 @@ export function ProjectBriefPanel() {
 
       return () => clearTimeout(timeout);
     }
-  }, [changedFields, clearChangedFields]);
+  }, [changedFields, clearChangedFields, brief?.reference_images]);
 
   if (!brief) {
     return (
-      <div className="w-80 border-r border-zinc-800 bg-zinc-950 p-6">
-        <div className="text-zinc-500">No Project loaded</div>
+      <div className="w-64 border-r border-zinc-800/50 bg-gradient-to-b from-zinc-950 to-zinc-900/50 p-4">
+        <div className="text-zinc-500 text-sm">No Project loaded</div>
       </div>
     );
   }
@@ -45,13 +50,13 @@ export function ProjectBriefPanel() {
   const isFieldHighlighted = (field: string) => highlightedFields.has(field);
 
   return (
-    <div className="w-80 border-r border-zinc-800 bg-zinc-950 flex flex-col h-full">
-      <div className="p-3 flex-shrink-0">
-        <h2 className="text-sm font-semibold text-white mb-2">Project Brief</h2>
+    <div className="w-64 border-r border-zinc-800/50 bg-gradient-to-b from-zinc-950 to-zinc-900/50 flex flex-col h-full">
+      <div className="p-3 flex-shrink-0 border-b border-zinc-800/50">
+        <h2 className="text-xs font-semibold text-zinc-300 uppercase tracking-wider">Project Brief</h2>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-3 pb-3">
-        <div className="space-y-1.5">
+      <div className="flex-1 overflow-y-auto px-3 py-3">
+        <div className="space-y-2">
         {/* Product with Upload Icon */}
         <div className="flex items-center justify-between gap-2">
           <div className="flex-1">

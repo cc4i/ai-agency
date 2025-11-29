@@ -65,9 +65,11 @@ export function useWebSocket(
     addAsset,
     updateAgentStatus,
     addAnnouncement,
-    addTranscriptMessage, // New action
+    addTranscriptMessage,
     setConnected,
     setProducerSpeaking,
+    setPreviewConcepts,
+    setCapturedReference,
   } = useProjectStore();
 
   const handleMessage = useCallback(
@@ -121,8 +123,64 @@ export function useWebSocket(
 
           case 'brief_update':
             if (message.data.brief) {
-              updateBrief(message.data.brief, message.data.changed_fields || []);
+              // Debug: Log the update
+              const changedFields = message.data.changed_fields || [];
+              console.log(`[WebSocket] brief_update received, changed_fields: ${changedFields.join(', ')}`);
+
+              // Debug: Log reference_images specifically
+              const refImages = message.data.brief.reference_images;
+              if (refImages) {
+                console.log(`[WebSocket] brief_update has ${refImages.length} reference_images`);
+                refImages.forEach((img: any, i: number) => {
+                  const urlLen = img.url?.length || 0;
+                  console.log(`[WebSocket]   ref_img[${i}]: url_len=${urlLen}`);
+                });
+              }
+
+              updateBrief(message.data.brief, changedFields);
             }
+            break;
+
+          case 'concept_preview':
+            // Handle concept preview for Smart Mirror iteration flow
+            if (message.data.concepts) {
+              const concepts = message.data.concepts.map((c: any) => ({
+                id: c.id || c.asset_id,
+                url: c.url,
+                description: c.description || c.prompt || 'Concept',
+                iteration: message.data.iteration || 1,
+              }));
+              logger.info(`[WebSocket] Received ${concepts.length} concept previews (iteration ${message.data.iteration})`);
+              setPreviewConcepts(concepts, message.data.iteration || 1);
+            }
+            break;
+
+          case 'reference_captured':
+            // Handle captured reference image for Smart Mirror display
+            if (message.data.reference) {
+              const ref = message.data.reference;
+              const refUrl = ref.url || ref.data;
+              logger.info(`[WebSocket] Reference captured: ${ref.id}`);
+              logger.info(`[WebSocket] Reference URL length: ${refUrl?.length || 0}`);
+              logger.info(`[WebSocket] Reference URL starts with: ${refUrl?.substring(0, 50) || 'N/A'}`);
+
+              // Validate it's a proper data URI
+              if (refUrl && !refUrl.startsWith('data:image')) {
+                logger.error(`[WebSocket] ERROR: Reference URL is not a valid data URI!`);
+              }
+
+              setCapturedReference({
+                id: ref.id || ref.reference_id,
+                url: refUrl,
+                description: ref.description || 'Captured reference',
+                timestamp: ref.timestamp || Date.now(),
+              });
+            }
+            break;
+
+          case 'concept_selected':
+            // Don't clear preview - keep concepts visible until Smart Mirror closes
+            logger.info('[WebSocket] Concept selected and saved to brief');
             break;
 
           case 'brief_init':
@@ -661,6 +719,22 @@ export function useWebSocket(
     }
   }, []);
 
+  const sendVideoFrame = useCallback((base64Data: string, type: 'video_input' | 'screen_input' = 'video_input') => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      // Remove data URL prefix if present for cleaner logging/processing
+      const cleanBase64 = base64Data.replace(/^data:image\/\w+;base64,/, '');
+
+      const message = {
+        type: type,
+        data: cleanBase64,
+      };
+
+      // Don't log full frame data to avoid console spam
+      // logger.debug(`[Video] Sending ${type} frame (${cleanBase64.length} chars)`);
+      wsRef.current.send(JSON.stringify(message));
+    }
+  }, []);
+
   const sendMessage = useCallback((message: WebSocketMessage) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify(message));
@@ -690,6 +764,7 @@ export function useWebSocket(
 
   return {
     sendAudio,
+    sendVideoFrame,
     sendMessage,
     sendTurnComplete,
     isConnected: wsRef.current?.readyState === WebSocket.OPEN,

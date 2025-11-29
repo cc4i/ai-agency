@@ -216,3 +216,93 @@ class ArtDirectorAgent(AgentBase):
         # In production, regenerate specific images
         # For now, return original result
         return result
+
+    async def generate_concept_sketches(
+        self,
+        reference_image_data: str,
+        reference_id: str,
+        instruction: str,
+        project_id: str
+    ) -> Dict[str, Any]:
+        """
+        Generate concept sketches based on a visual reference.
+
+        This is used in the concept validation loop - generates quick concept
+        variations for user approval before creating final hero images.
+
+        The reference image data is passed directly (not looked up from brief),
+        as captured references are stored temporarily on the connection.
+
+        Args:
+            reference_image_data: Base64 image data of the captured reference
+            reference_id: ID of the reference (for tracking)
+            instruction: User's instruction for the concepts
+            project_id: Project identifier
+
+        Returns:
+            Dict with success status and list of concept images
+        """
+        logger.info(f"[Art Director] Generating concept sketches from reference: {reference_id}")
+
+        try:
+            from app.services.redis_client import redis_client
+            from app.workflows.art_director_workflow import ArtDirectorWorkflow
+
+            # Get project brief for product context
+            brief = await redis_client.get_project_brief(project_id)
+            product_context = {
+                "product_name": brief.product_name if brief else "product",
+                "theme": brief.theme if brief else "",
+                "product_category": brief.product_category if brief else ""
+            }
+
+            # Instantiate workflow
+            workflow = ArtDirectorWorkflow()
+
+            # Generate concepts using workflow
+            concepts = await workflow.generate_concepts(
+                reference_image_data=reference_image_data,
+                instruction=instruction,
+                product_context=product_context,
+                num_concepts=3
+            )
+
+            if not concepts:
+                return {
+                    "success": False,
+                    "error": "Failed to generate concept sketches"
+                }
+
+            # Track iteration number
+            iteration = getattr(self, '_concept_iteration', 0) + 1
+            self._concept_iteration = iteration
+
+            # Prepare concepts for preview (don't save to brief yet - user needs to select)
+            import time
+            concept_previews = []
+            for i, concept in enumerate(concepts):
+                concept_id = concept.get("asset_id", f"concept_{int(time.time() * 1000)}_{i}")
+                concept_previews.append({
+                    "id": concept_id,
+                    "url": concept.get("url", ""),
+                    "description": concept.get("prompt", "Concept sketch"),
+                    "generation_number": i + 1,
+                    "instruction": instruction,
+                })
+                logger.info(f"[Art Director] Prepared concept preview: {concept_id}")
+
+            logger.info(f"[Art Director] Generated {len(concepts)} concept previews (iteration {iteration})")
+
+            return {
+                "success": True,
+                "concepts": concept_previews,
+                "iteration": iteration,
+                "message": f"Generated {len(concepts)} concept sketches. They are now visible in the Smart Mirror. Ask the user which one they prefer, or if they want to iterate with different instructions."
+            }
+
+        except Exception as e:
+            logger.error(f"[Art Director] Error generating concepts: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }

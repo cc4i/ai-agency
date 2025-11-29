@@ -11,23 +11,29 @@
 'use client';
 
 import { useState, useRef } from 'react';
-import { Paperclip, Mic, MicOff } from 'lucide-react';
+import { Paperclip, Mic, MicOff, Camera, Monitor } from 'lucide-react';
 import { useProjectStore } from '@/stores/useProjectStore';
 
 interface ChatInputBarProps {
   onSendText: (text: string) => void;
   onSendImage: (file: File) => void;
   onToggleMic: () => void;
+  onToggleCamera?: () => void;
+  onToggleScreenShare?: () => void;
   isRecording: boolean;
-  isConnected: boolean;
+  isCameraActive?: boolean;
+  isScreenShareActive?: boolean;
 }
 
 export function ChatInputBar({
   onSendText,
   onSendImage,
   onToggleMic,
+  onToggleCamera,
+  onToggleScreenShare,
   isRecording,
-  isConnected
+  isCameraActive,
+  isScreenShareActive,
 }: ChatInputBarProps) {
   const { audioLevel } = useProjectStore();
   const [message, setMessage] = useState('');
@@ -79,21 +85,46 @@ export function ChatInputBar({
   return (
     <div className="border-t border-zinc-800 bg-zinc-900 px-4 py-3">
       <div className="max-w-6xl mx-auto flex items-center gap-3">
-        {/* Image Upload - Left */}
-        <button
-          onClick={() => fileInputRef.current?.click()}
-          className="p-2 rounded-lg hover:bg-zinc-800 transition-colors group"
-          title="Upload image"
-        >
-          <Paperclip className="w-5 h-5 text-zinc-400 group-hover:text-zinc-300" />
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            onChange={handleFileChange}
-            className="hidden"
-          />
-        </button>
+        {/* Left Actions Group */}
+        <div className="flex items-center gap-1">
+          {/* Image Upload */}
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="p-2 rounded-lg hover:bg-zinc-800 transition-colors group"
+            title="Upload image"
+          >
+            <Paperclip className="w-5 h-5 text-zinc-400 group-hover:text-zinc-300" />
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              onChange={handleFileChange}
+              className="hidden"
+            />
+          </button>
+
+          {/* Camera Toggle */}
+          {onToggleCamera && (
+            <button
+              onClick={onToggleCamera}
+              className={`p-2 rounded-lg transition-colors group ${isCameraActive ? 'bg-purple-500/20 text-purple-400' : 'hover:bg-zinc-800 text-zinc-400'}`}
+              title={isCameraActive ? "Turn off camera" : "Turn on camera"}
+            >
+              <Camera className={`w-5 h-5 ${isCameraActive ? 'text-purple-400' : 'text-zinc-400 group-hover:text-zinc-300'}`} />
+            </button>
+          )}
+
+          {/* Screen Share Toggle */}
+          {onToggleScreenShare && (
+            <button
+              onClick={onToggleScreenShare}
+              className={`p-2 rounded-lg transition-colors group ${isScreenShareActive ? 'bg-blue-500/20 text-blue-400' : 'hover:bg-zinc-800 text-zinc-400'}`}
+              title={isScreenShareActive ? "Stop screen share" : "Share screen"}
+            >
+              <Monitor className={`w-5 h-5 ${isScreenShareActive ? 'text-blue-400' : 'text-zinc-400 group-hover:text-zinc-300'}`} />
+            </button>
+          )}
+        </div>
 
         {/* Text Input - Center (flex-1) */}
         <div className="flex-1 relative">
@@ -106,16 +137,7 @@ export function ChatInputBar({
             rows={1}
             className="w-full bg-zinc-800 rounded-lg px-4 py-2.5 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-shadow resize-none overflow-hidden min-h-[42px] max-h-[200px]"
           />
-          <div className="absolute right-3 -bottom-5 text-xs text-zinc-600 flex items-center gap-2">
-            {/* Connection Status Indicator */}
-            <div className="flex items-center gap-1">
-              <div
-                className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`}
-                title={isConnected ? 'Backend connected' : 'Backend disconnected'}
-              />
-              <span>{isConnected ? 'Connected' : 'Disconnected'}</span>
-            </div>
-            <span className="text-zinc-700">•</span>
+          <div className="absolute right-3 -bottom-5 text-xs text-zinc-600">
             <span>{navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'}+Enter to send</span>
           </div>
         </div>
@@ -128,16 +150,16 @@ export function ChatInputBar({
             ${isRecording && audioLevel > 0.1
               ? 'text-white shadow-lg'
               : isRecording
-              ? 'bg-blue-500 text-white'
-              : 'hover:bg-zinc-800 text-zinc-400 hover:text-zinc-300'
+                ? 'bg-blue-500 text-white'
+                : 'hover:bg-zinc-800 text-zinc-400 hover:text-zinc-300'
             }
           `}
           style={
             isRecording && audioLevel > 0.1
               ? {
-                  backgroundColor: `rgb(59, 130, 246, ${0.5 + audioLevel * 0.5})`,
-                  boxShadow: `0 0 ${10 + audioLevel * 20}px rgba(59, 130, 246, ${audioLevel})`,
-                }
+                backgroundColor: `rgb(59, 130, 246, ${0.5 + audioLevel * 0.5})`,
+                boxShadow: `0 0 ${10 + audioLevel * 20}px rgba(59, 130, 246, ${audioLevel})`,
+              }
               : undefined
           }
           title={isRecording ? 'Disable audio input' : 'Enable audio input'}

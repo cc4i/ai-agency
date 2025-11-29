@@ -37,7 +37,8 @@ file_handler.setLevel(logging.DEBUG)  # Capture everything to file
 # Configure root logger
 logging.basicConfig(
     level=logging.DEBUG,
-    handlers=[console_handler, file_handler]
+    handlers=[console_handler, file_handler],
+    force=True
 )
 
 logger = logging.getLogger(__name__)

@@ -9,7 +9,13 @@ Usage:
 """
 
 import sys
+import os
+from pathlib import Path
 from typing import Dict, List
+
+# Add backend directory to path
+backend_dir = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(backend_dir))
 
 
 def validate_agents() -> Dict[str, bool]:

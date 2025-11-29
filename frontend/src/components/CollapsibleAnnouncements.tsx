@@ -49,53 +49,53 @@ export function CollapsibleAnnouncements() {
   };
 
   return (
-    <div className="border-t border-zinc-800 bg-zinc-900">
+    <div className="border-t border-zinc-800/50 bg-gradient-to-r from-zinc-900 via-zinc-900/95 to-zinc-900">
       {/* Collapsible Header */}
       <button
         onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full px-4 py-2.5 flex items-center justify-between hover:bg-zinc-800/50 transition-colors"
+        className="w-full px-4 py-2 flex items-center justify-between hover:bg-zinc-800/30 transition-colors"
       >
         <div className="flex items-center gap-2">
-          <Megaphone className="w-4 h-4 text-purple-400" />
-          <span className="text-sm font-medium text-zinc-300">
+          <Megaphone className="w-3.5 h-3.5 text-purple-400" />
+          <span className="text-xs font-medium text-zinc-400">
             Producer Announcements
           </span>
           {unreadCount > 0 && (
-            <span className="px-2 py-0.5 bg-purple-500/20 text-purple-400 text-xs rounded-full border border-purple-500/30">
+            <span className="px-1.5 py-0.5 bg-purple-500/20 text-purple-400 text-[10px] rounded-full border border-purple-500/30">
               {unreadCount}
             </span>
           )}
         </div>
         {isExpanded ? (
-          <ChevronUp className="w-4 h-4 text-zinc-500" />
+          <ChevronUp className="w-3.5 h-3.5 text-zinc-500" />
         ) : (
-          <ChevronDown className="w-4 h-4 text-zinc-500" />
+          <ChevronDown className="w-3.5 h-3.5 text-zinc-500" />
         )}
       </button>
 
       {/* Expanded Content */}
       {isExpanded && (
-        <div className="border-t border-zinc-800 max-h-60 overflow-y-auto">
+        <div className="border-t border-zinc-800/50 max-h-48 overflow-y-auto">
           {recentAnnouncements.length === 0 ? (
-            <div className="p-4 text-center text-sm text-zinc-500">
+            <div className="p-3 text-center text-xs text-zinc-500">
               No announcements yet
             </div>
           ) : (
-            <div className="divide-y divide-zinc-800">
+            <div className="divide-y divide-zinc-800/50">
               {recentAnnouncements.map((announcement, index) => (
                 <div
                   key={index}
-                  className="p-3 hover:bg-zinc-800/50 transition-colors"
+                  className="px-4 py-2.5 hover:bg-zinc-800/30 transition-colors"
                 >
                   <div className="flex items-start gap-2">
-                    <span className="text-lg flex-shrink-0">
+                    <span className="text-sm flex-shrink-0">
                       {getAnnouncementIcon(announcement.type)}
                     </span>
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm text-zinc-300">
+                      <p className="text-xs text-zinc-300">
                         {announcement.message}
                       </p>
-                      <p className="text-xs text-zinc-600 mt-1">
+                      <p className="text-[10px] text-zinc-600 mt-0.5">
                         {getTimeAgo(announcement.timestamp)}
                       </p>
                     </div>

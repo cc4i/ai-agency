@@ -22,6 +22,7 @@ import { ConfigurationScreen } from './ConfigurationScreen';
 import { ChatInputBar } from './ChatInputBar';
 import { CollapsibleAnnouncements } from './CollapsibleAnnouncements';
 import { AddAgentModal } from './AddAgentModal';
+import { MultimodalInput } from './MultimodalInput';
 import { useProjectStore } from '@/stores/useProjectStore';
 
 export default function WorkspaceClient() {
@@ -69,9 +70,13 @@ export default function WorkspaceClient() {
     setConfigComplete(true);
   };
 
+  // Multimodal state
+  const [multimodalMode, setMultimodalMode] = useState<'camera' | 'screen' | null>(null);
+  const [isTranscriptOpen, setIsTranscriptOpen] = useState(true);
+
   // IMPORTANT: Call hooks unconditionally (Rules of Hooks)
   // Must be called before any conditional returns to ensure cleanup runs properly
-  const { sendAudio, sendMessage, sendTurnComplete, isConnected } = useWebSocket(
+  const { sendAudio, sendMessage, sendTurnComplete, isConnected, sendVideoFrame } = useWebSocket(
     sessionId,
     projectId,
     selectedModel,
@@ -138,6 +143,13 @@ export default function WorkspaceClient() {
     reader.readAsDataURL(file);
   };
 
+  // Handler for frame capture
+  const handleFrameCapture = (dataUrl: string, type: 'video_input' | 'screen_input') => {
+    if (sendVideoFrame) {
+      sendVideoFrame(dataUrl, type);
+    }
+  };
+
   return (
     <div className="h-screen bg-black text-white flex flex-col overflow-hidden">
       {/* Agent Status Bar */}
@@ -146,6 +158,7 @@ export default function WorkspaceClient() {
         selectedModel={selectedModel}
         selectedVoice={selectedVoice}
         onAddAgent={() => setShowAddAgentModal(true)}
+        isConnected={isConnected}
       />
 
       {/* Add Agent Modal */}
@@ -160,12 +173,42 @@ export default function WorkspaceClient() {
         <ProjectBriefPanel />
 
         {/* Main content container - Asset Display */}
-        <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="flex-1 flex flex-col overflow-hidden relative">
           <AssetDisplay sendMessage={sendMessage} />
+
+          {/* Smart Mirror (Multimodal Input) */}
+          <MultimodalInput
+            isActive={!!multimodalMode}
+            mode={multimodalMode}
+            onClose={() => setMultimodalMode(null)}
+            onFrameCapture={handleFrameCapture}
+          />
         </div>
 
-        {/* Right Sidebar - Transcript */}
-        <TranscriptDisplay />
+        {/* Right Sidebar - Transcript (Foldable) */}
+        <div
+          className={`transition-all duration-300 ease-in-out border-l border-zinc-800/50 flex flex-col bg-zinc-950/80 ${isTranscriptOpen ? 'w-72' : 'w-10'}`}
+        >
+          <div className="flex items-center justify-between p-2 border-b border-zinc-800/50">
+            {isTranscriptOpen && (
+              <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider">
+                Conversation Transcript
+              </span>
+            )}
+            <button
+              onClick={() => setIsTranscriptOpen(!isTranscriptOpen)}
+              className="p-1 hover:bg-zinc-800 rounded text-zinc-500 hover:text-white transition-colors"
+              title={isTranscriptOpen ? "Collapse transcript" : "Expand transcript"}
+            >
+              {isTranscriptOpen ? '»' : '«'}
+            </button>
+          </div>
+          {isTranscriptOpen && (
+            <div className="flex-1 overflow-hidden">
+              <TranscriptDisplay />
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Chat Input Bar - Above Announcements */}
@@ -173,8 +216,11 @@ export default function WorkspaceClient() {
         onSendText={handleSendText}
         onSendImage={handleSendImage}
         onToggleMic={toggleRecording}
+        onToggleCamera={() => setMultimodalMode(multimodalMode === 'camera' ? null : 'camera')}
+        onToggleScreenShare={() => setMultimodalMode(multimodalMode === 'screen' ? null : 'screen')}
         isRecording={isRecording}
-        isConnected={isConnected}
+        isCameraActive={multimodalMode === 'camera'}
+        isScreenShareActive={multimodalMode === 'screen'}
       />
 
       {/* Collapsible Announcements - Bottom */}

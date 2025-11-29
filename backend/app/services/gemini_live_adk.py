@@ -34,6 +34,7 @@ import base64
 import json
 import logging
 import os
+import time
 from typing import Any, Dict, List, Optional
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -253,6 +254,17 @@ async def broadcast_to_frontend(message_type: str, data: Dict[str, Any], fronten
                                 logger.error(f"[WebSocket] ERROR first image has invalid data URI format (no comma separator)")
                         else:
                             logger.warning(f"[WebSocket] WARNING first image URL doesn't start with 'data:image': {url[:100]}")
+
+            # Debug logging for reference_captured
+            if message_type == "reference_captured" and "reference" in data:
+                ref = data.get("reference", {})
+                ref_url = ref.get("url", "")
+                logger.info(f"[WebSocket] DEBUG reference_captured: id={ref.get('id')}")
+                logger.info(f"[WebSocket] DEBUG reference URL length: {len(ref_url)}")
+                if ref_url:
+                    logger.info(f"[WebSocket] DEBUG reference URL starts with: {ref_url[:50]}")
+                    if not ref_url.startswith("data:image"):
+                        logger.error(f"[WebSocket] ERROR reference URL is not a valid data URI!")
 
             # Serialize message and check size
             message_json = json.dumps(message)
@@ -552,6 +564,346 @@ async def send_asset_added(agent_id: str, asset_type: str, asset_data: Dict[str,
         "asset_type": asset_type,
         "asset_data": asset_data
     }, frontend_ws=frontend_ws)
+
+
+async def capture_visual_reference(
+    description: str,
+    category: str = "sketch"
+) -> Dict[str, Any]:
+    """
+    Capture the current video frame as a TEMPORARY visual reference for concept generation.
+
+    This does NOT save to brief.reference_images. The captured frame is stored temporarily
+    on the connection for use by generate_concept_sketches. Only after the user selects
+    a concept will it be saved to the brief via select_concept.
+
+    Flow:
+    1. capture_visual_reference → temporary storage + Smart Mirror display
+    2. generate_concept_sketches → uses temp reference to generate concepts
+    3. select_concept → saves chosen concept to brief.reference_images
+
+    Args:
+        description: A brief description of what is being captured (e.g., "User's hand-drawn shoe sketch")
+        category: Type of reference - "sketch", "product", "screen", or "other"
+
+    Returns:
+        Dict with success status and reference_id
+    """
+    frontend_ws = getattr(capture_visual_reference, '_frontend_ws', None)
+    connection = getattr(capture_visual_reference, '_connection', None)
+
+    logger.info(f"[TOOL] capture_visual_reference called: {description} (category: {category})")
+
+    # Get the last video frame from the connection
+    if connection is None:
+        logger.warning("[TOOL] No connection available")
+        return {"success": False, "error": "No connection available"}
+
+    if not hasattr(connection, 'last_video_frame'):
+        logger.warning("[TOOL] Connection has no last_video_frame attribute")
+        return {"success": False, "error": "Connection missing video frame attribute"}
+
+    frame_data = connection.last_video_frame
+    logger.info(f"[TOOL] last_video_frame: {type(frame_data)}, length: {len(frame_data) if frame_data else 0}")
+
+    # Log the format of the frame data to debug broken images
+    if frame_data:
+        if frame_data.startswith("data:image"):
+            logger.info(f"[TOOL] Frame data is a valid data URI (starts with 'data:image')")
+        else:
+            logger.warning(f"[TOOL] Frame data does NOT start with 'data:image', first 50 chars: {frame_data[:50]}")
+
+    if not frame_data:
+        logger.warning("[TOOL] No video frame cached - ensure camera is on and sending frames")
+        return {"success": False, "error": "No recent video frame to capture. Please ensure camera is enabled."}
+
+    # Create a reference ID
+    reference_id = f"ref_{int(time.time() * 1000)}"
+
+    # Store TEMPORARILY on the connection (NOT in brief.reference_images)
+    # This will be used by generate_concept_sketches
+    connection.captured_reference = {
+        "id": reference_id,
+        "url": frame_data,
+        "description": description,
+        "category": category,
+        "timestamp": time.time()
+    }
+
+    logger.info(f"[TOOL] Stored temporary reference on connection: {reference_id}")
+    logger.info(f"[TOOL] Reference URL length: {len(frame_data)}, starts with: {frame_data[:50]}")
+
+    # Broadcast reference_captured to Smart Mirror (shows the captured key frame)
+    await broadcast_to_frontend("reference_captured", {
+        "reference": connection.captured_reference
+    }, frontend_ws=frontend_ws)
+
+    logger.info(f"[TOOL] Captured visual reference: {reference_id}, broadcasted to frontend")
+    return {
+        "success": True,
+        "reference_id": reference_id,
+        "message": f"Visual reference '{description}' captured. Now call generate_concept_sketches to create concept variations."
+    }
+
+
+async def generate_concept_sketches(
+    instruction: str = "Generate concept variations"
+) -> Dict[str, Any]:
+    """
+    Task the Art Director to generate concept sketches based on the captured visual reference.
+
+    Use this AFTER capture_visual_reference to generate quick concept variations
+    for user approval before creating final hero images.
+
+    The reference image is read from the connection's temporary storage (set by capture_visual_reference).
+
+    Args:
+        instruction: Instructions for the concept generation (e.g., "make it more modern")
+
+    Returns:
+        Dict with success status and concept images
+    """
+    project_id = getattr(generate_concept_sketches, '_project_id', 'default')
+    frontend_ws = getattr(generate_concept_sketches, '_frontend_ws', None)
+    connection = getattr(generate_concept_sketches, '_connection', None)
+
+    logger.info(f"[TOOL] generate_concept_sketches called with instruction: {instruction}")
+
+    # Get captured reference from connection's temporary storage
+    if connection is None:
+        return {"success": False, "error": "No connection available"}
+
+    captured_ref = getattr(connection, 'captured_reference', None)
+    if not captured_ref:
+        return {
+            "success": False,
+            "error": "No captured reference found. Please capture a visual reference first using capture_visual_reference."
+        }
+
+    reference_image_data = captured_ref.get("url")
+    reference_id = captured_ref.get("id")
+
+    if not reference_image_data:
+        return {"success": False, "error": "Captured reference has no image data"}
+
+    logger.info(f"[TOOL] Using captured reference: {reference_id}")
+
+    try:
+        # Get Art Director agent
+        from app.services.agent_registry import agent_registry
+        art_director = agent_registry.get_agent("art_director")
+        if not art_director:
+            return {"success": False, "error": "Art Director agent not available"}
+
+        # Set frontend_ws for broadcasting
+        art_director.frontend_ws = frontend_ws
+
+        # Send agent status update: thinking
+        await send_agent_status("art_director", "thinking", "Generating concept sketches")
+
+        # Announce to user
+        await send_announcement("Art Director is creating concept sketches from your reference...", "info")
+
+        # Call Art Director's generate_concept_sketches with the image data directly
+        result = await art_director.generate_concept_sketches(
+            reference_image_data=reference_image_data,
+            reference_id=reference_id,
+            instruction=instruction,
+            project_id=project_id
+        )
+
+        if not result.get("success"):
+            await send_agent_status("art_director", "error", "")
+            return result
+
+        # Track iteration number on connection
+        iteration = result.get("iteration", 1)
+        connection.concept_iteration = iteration
+
+        # Store pending concepts on connection for later selection
+        concept_previews = result.get("concepts", [])
+        connection.pending_concepts = concept_previews
+
+        # Debug: Log concepts being stored
+        logger.info(f"[TOOL] Storing {len(concept_previews)} concepts on connection.pending_concepts")
+        for i, cp in enumerate(concept_previews):
+            url_len = len(cp.get("url", "")) if cp.get("url") else 0
+            logger.info(f"[TOOL]   Concept {i+1}: id={cp.get('id')}, url_length={url_len}")
+
+        # Broadcast concept_preview to frontend (displays in Smart Mirror)
+        await broadcast_to_frontend("concept_preview", {
+            "concepts": concept_previews,
+            "iteration": iteration,
+            "reference_image_id": reference_id,
+        }, frontend_ws=frontend_ws)
+
+        await send_agent_status("art_director", "complete", "")
+
+        logger.info(f"[TOOL] Generated {len(concept_previews)} concept previews (iteration {iteration})")
+
+        return result
+
+    except Exception as e:
+        logger.error(f"[TOOL] Error generating concept sketches: {e}", exc_info=True)
+        await send_agent_status("art_director", "error", "")
+        return {"success": False, "error": str(e)}
+
+
+async def select_concept(
+    concept_id: str
+) -> Dict[str, Any]:
+    """
+    Save user's selected concept to the project brief.
+
+    Call this when the user chooses a concept from the Smart Mirror preview.
+    The user might say "I like the first one", "use the second concept",
+    "the third one looks good", etc.
+
+    This saves the selected concept to brief.reference_images.
+
+    Args:
+        concept_id: Which concept to select. Can be:
+            - "1", "2", "3" (by number)
+            - "first", "second", "third" (by word)
+            - The actual concept ID
+
+    Returns:
+        Dict with success status and selected concept details
+    """
+    project_id = getattr(select_concept, '_project_id', 'default')
+    frontend_ws = getattr(select_concept, '_frontend_ws', None)
+    connection = getattr(select_concept, '_connection', None)
+
+    logger.info(f"[TOOL] select_concept called: {concept_id}")
+
+    try:
+        # Get pending concepts from connection
+        if connection is None:
+            logger.error("[TOOL] select_concept: No connection available")
+            return {"success": False, "error": "No connection available"}
+
+        pending_concepts = getattr(connection, 'pending_concepts', [])
+        logger.info(f"[TOOL] select_concept: Found {len(pending_concepts)} pending concepts")
+        for i, pc in enumerate(pending_concepts):
+            url_len = len(pc.get("url", "")) if pc.get("url") else 0
+            logger.info(f"[TOOL]   Pending concept {i+1}: id={pc.get('id')}, url_length={url_len}")
+
+        if not pending_concepts:
+            return {
+                "success": False,
+                "error": "No pending concepts to select from. Generate concepts first."
+            }
+
+        # Find the selected concept
+        # Support both index-based selection ("1", "2", "3", "first", "second", "third") and ID match
+        selected = None
+        concept_id_lower = concept_id.lower().strip()
+
+        # Map words to indices
+        word_to_index = {
+            "first": 0, "1": 0, "one": 0,
+            "second": 1, "2": 1, "two": 1,
+            "third": 2, "3": 2, "three": 2,
+        }
+
+        if concept_id_lower in word_to_index:
+            idx = word_to_index[concept_id_lower]
+            if idx < len(pending_concepts):
+                selected = pending_concepts[idx]
+        else:
+            # Try exact ID match
+            for concept in pending_concepts:
+                if concept.get("id") == concept_id:
+                    selected = concept
+                    break
+
+        if not selected:
+            available_count = len(pending_concepts)
+            logger.error(f"[TOOL] Concept '{concept_id}' not found. Available concepts: {available_count}")
+            return {
+                "success": False,
+                "error": f"Concept '{concept_id}' not found. Available: first, second, third (or 1, 2, 3)"
+            }
+
+        logger.info(f"[TOOL] Found selected concept: id={selected.get('id')}, url_length={len(selected.get('url', ''))}")
+
+        # Validate concept has image data
+        if not selected.get("url"):
+            logger.error(f"[TOOL] Selected concept has no URL/image data")
+            return {"success": False, "error": "Selected concept has no image data"}
+
+        # Get project brief
+        brief = await redis_client.get_project_brief(project_id)
+        if not brief:
+            return {"success": False, "error": "Project not found"}
+
+        # Create ImageAsset and save to brief.reference_images
+        from app.models.assets import ImageAsset
+        asset = ImageAsset(
+            asset_id=selected["id"],
+            url=selected["url"],
+            description=selected.get("description", "Selected concept"),
+            generation_params={
+                "category": "selected_concept",
+                "timestamp": time.time(),
+                "instruction": selected.get("instruction", ""),
+                "iteration": getattr(connection, 'concept_iteration', 1),
+            }
+        )
+
+        # Use update_project_brief to properly save and get updated brief back
+        current_reference_images = brief.reference_images or []
+        current_reference_images.append(asset)
+
+        logger.info(f"[TOOL] Saving {len(current_reference_images)} reference images to brief")
+        logger.info(f"[TOOL] New asset: id={asset.asset_id}, url_len={len(asset.url)}, desc={asset.description}")
+
+        updated_brief = await redis_client.update_project_brief(project_id, {
+            "reference_images": current_reference_images
+        })
+
+        logger.info(f"[TOOL] Saved concept to brief. reference_images count: {len(updated_brief.reference_images)}")
+
+        # Debug: Log the reference images being saved
+        for i, ref_img in enumerate(updated_brief.reference_images):
+            logger.info(f"[TOOL]   ref_img[{i}]: id={ref_img.asset_id}, url_len={len(ref_img.url) if ref_img.url else 0}")
+
+        # Clear temporary state on connection
+        connection.pending_concepts = []
+        connection.concept_iteration = 0
+        # Keep captured_reference for potential re-generation
+
+        # Broadcast concept_selected to frontend
+        await broadcast_to_frontend("concept_selected", {
+            "concept_id": selected["id"],
+        }, frontend_ws=frontend_ws)
+
+        # Broadcast brief_update with the updated brief from Redis
+        brief_data = sanitize_for_json(updated_brief.model_dump())
+
+        # Debug: Log what's being broadcasted
+        ref_images_in_broadcast = brief_data.get("reference_images", [])
+        logger.info(f"[TOOL] Broadcasting brief_update with {len(ref_images_in_broadcast)} reference_images")
+        for i, ref_img in enumerate(ref_images_in_broadcast):
+            url_len = len(ref_img.get("url", "")) if ref_img.get("url") else 0
+            logger.info(f"[TOOL]   broadcast ref_img[{i}]: url_len={url_len}")
+
+        await broadcast_to_frontend("brief_update", {
+            "brief": brief_data,
+            "changed_fields": ["reference_images"]
+        }, frontend_ws=frontend_ws)
+
+        logger.info(f"[TOOL] Concept {selected['id']} selected and saved to brief.reference_images")
+
+        return {
+            "success": True,
+            "selected_concept": selected,
+            "message": f"Great choice! The concept has been saved to your project. You can now use it for hero image generation."
+        }
+
+    except Exception as e:
+        logger.error(f"[TOOL] Error selecting concept: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
 
 
 # ============================================================================
@@ -1634,7 +1986,7 @@ async def refine_all_hero_images(
         refined_images = [ImageAsset(**img_dict) for img_dict in refined_images_dicts]
 
         # Update refinement history for ALL images BEFORE replacing them
-        for i, (current_image, refined_image) in enumerate(zip(brief.hero_images, refined_images)):
+        for current_image, _ in zip(brief.hero_images, refined_images):
             # Get the original asset_id
             original_id = current_image.parent_asset_id or current_image.asset_id
 
@@ -1868,6 +2220,24 @@ You're the Executive Producer of AI Agency Hub. Guide clients via conversational
 
 **DON'T**: ❌ Call `generate_social_video`/`generate_landing_page` without selected image | ❌ Present options before tool returns | ❌ Use technical function names in speech | ❌ Skip prerequisites
 
+# MULTIMODAL INTERACTION (Camera & Screen Share)
+You have access to the user's camera feed (Smart Mirror) AND screen share. Both work identically for visual references.
+
+**When user shows you something via camera OR shares their screen:**
+1. **Acknowledge it visually**: "I see you're holding a sketch..." or "I can see the design on your screen..."
+2. **Capture it**: Call `capture_visual_reference(description="...", category="...")` to temporarily save the frame.
+   - For camera: "User's hand-drawn sketch", category="sketch"
+   - For screen: "Design mockup from screen", category="screen"
+3. **Generate Concepts**: Call `generate_concept_sketches(instruction="...")` to create 3 concept variations. The captured reference is used automatically.
+4. **Iterate**: User can ask for changes ("make them more colorful") → call `generate_concept_sketches(instruction="more colorful")` again.
+5. **Select**: When user chooses one ("I like the first one") → call `select_concept(concept_id="first")` to save it to the project brief.
+6. **Proceed**: Now the selected concept is in brief.reference_images and can be used for hero image generation.
+
+**Screen Share specific use cases:**
+- User shares a design tool (Figma, Photoshop) → capture the design as reference
+- User shares a competitor's website → capture for style inspiration
+- User shares a mood board or Pinterest → capture visual direction
+
 # WORKFLOW
 **Stage 1: Discovery** → Ask about product → Call `update_project_brief` for each detail (name, category, target_market, theme, brand_tone, key_features) → When complete, offer strategy
 
@@ -1896,6 +2266,13 @@ You're the Executive Producer of AI Agency Hub. Guide clients via conversational
 - User requests audio → `generate_audio_assets` (needs slogan ✓)
 - User requests page → `generate_landing_page` (needs image ✓)
 - User references past → `load_memory(query="...")`
+
+**Visual Input (Camera OR Screen Share):**
+- User shows visual via camera → `capture_visual_reference(description, category="sketch/product/other")` to capture frame
+- User shares screen with design → `capture_visual_reference(description, category="screen")` to capture frame
+- Generate concepts → `generate_concept_sketches(instruction)` (uses captured frame automatically)
+- User wants changes → `generate_concept_sketches(instruction="new direction")` to iterate
+- User selects concept → `select_concept(concept_id="first/second/third")` to save to brief
 
 # 🎨 IMAGE REFINEMENT
 - User refines single image → `refine_hero_image(variation_number, feedback)`
@@ -1928,6 +2305,9 @@ Always verbally announce which team is working BEFORE calling agent tools. Use n
 - `generate_social_video` → "I'll bring in our Video Producer..." OR "Let me get the video team on this..."
 - `generate_audio_assets` → "I'll bring in our Audio team..." OR "Let me get our composers working on this..."
 - `generate_landing_page` → "I'll have our Web Dev team build that..." OR "Let me bring in our developers..."
+- `capture_visual_reference` → "I see that. Let me capture this frame..."
+- `generate_concept_sketches` → "I'll have our Art Director sketch up some concepts based on that..."
+- `select_concept` → "Great choice! I'll save that to your project..."
 
 **Purpose**: This sets expectations that work is happening and provides transparency into the creative process.
 
@@ -1958,6 +2338,29 @@ You: *[Call `update_project_brief(selected_slogan="Step Into Your Aura")`]* "Exc
 
 User: "I like the first one but add modern elements."
 You: "Great, I'll have them refine that with modern elements..." *[Call `refine_hero_image(1, "add modern elements")`]* *[Returns: refined image]* "There we go—added holographic UI overlays while keeping that dramatic lighting you loved. Better?"
+
+# CAMERA EXAMPLE (Smart Mirror)
+User: *[Shows sketch on camera]* "Here's my rough sketch for the sneaker design."
+You: "I see your sketch—looks like a sleek silhouette with some interesting details. Let me capture this..." *[Call `capture_visual_reference(description="Hand-drawn sneaker sketch with angular design", category="sketch")`]* "Got it! Want me to have our Art Director create some concept variations based on this?"
+
+User: "Yes, make them futuristic."
+You: "I'll have our Art Director sketch up some concepts..." *[Call `generate_concept_sketches(instruction="futuristic interpretation of the sketch")`]* *[Returns: 3 concepts]* "Here are three concept variations: One has a sleek cyber aesthetic, two goes more holographic, three emphasizes the angular lines from your sketch. Which direction speaks to you?"
+
+User: "I like the second one but less holographic."
+You: "Let me have them iterate on that..." *[Call `generate_concept_sketches(instruction="like concept 2 but dial back the holographic elements")`]* *[Returns: 3 new concepts]* "Here's a refined set—cleaner, less holographic but still futuristic. Better?"
+
+User: "Yes, the first one is perfect."
+You: "Great choice! I'll save that to your project..." *[Call `select_concept(concept_id="first")`]* "Done! This concept is now saved as your reference. Ready to generate the full hero images based on this direction?"
+
+# SCREEN SHARE EXAMPLE
+User: *[Shares screen showing Figma design]* "I'm sharing my Figma mockup. Can you see it?"
+You: "Yes, I can see your Figma design—nice clean lines and that gradient on the product looks great. Let me capture this..." *[Call `capture_visual_reference(description="Figma product mockup with gradient styling and clean typography", category="screen")`]* "Got it! Want me to create some concept variations based on this design direction?"
+
+User: "Yes, but make it more premium looking."
+You: "I'll have our Art Director sketch up some premium concepts..." *[Call `generate_concept_sketches(instruction="premium luxury interpretation of the design")`]* *[Returns: 3 concepts]* "Here are three premium variations: One adds metallic accents, two goes for dark elegance, three uses subtle textures. Which feels right?"
+
+User: "The third one."
+You: "Great choice! I'll save that to your project..." *[Call `select_concept(concept_id="third")`]* "Done! This concept is now your reference image. Ready to proceed to hero images?"
 
 # CURRENT PROJECT
 Project: `{project_id}` | First message: Warmly greet, ask product vision.
@@ -2078,11 +2481,15 @@ class GeminiLiveADKConnection:
 
         # Storage for pending creative summaries (injected at turn_complete)
         self.pending_creative_summaries: List[str] = []
+        
+        # Storage for last video frame (for capture_visual_reference tool)
+        self.last_video_frame: Optional[str] = None
 
         # Set context for tools (so they know which project to use)
-        for tool in [update_project_brief, create_campaign_strategy, generate_hero_images,
-                     refine_hero_image, refine_all_hero_images, select_image_version,
-                     generate_social_video, generate_audio_assets, generate_landing_page]:
+        for tool in [update_project_brief, capture_visual_reference, generate_concept_sketches,
+                     select_concept, create_campaign_strategy, generate_hero_images, refine_hero_image,
+                     refine_all_hero_images, select_image_version, generate_social_video,
+                     generate_audio_assets, generate_landing_page]:
             tool._session_id = session_id
             tool._project_id = project_id
             tool._frontend_ws = None  # Will be set after WebSocket connect
@@ -2099,7 +2506,11 @@ class GeminiLiveADKConnection:
                 update_project_brief,
                 create_campaign_strategy,
                 generate_hero_images,
-                # Image refinement tools (NEW)
+                # Visual reference & concept tools (for Smart Mirror)
+                capture_visual_reference,
+                generate_concept_sketches,
+                select_concept,  # NEW: Select concept from preview
+                # Image refinement tools
                 refine_hero_image,
                 refine_all_hero_images,
                 select_image_version,
@@ -2156,7 +2567,9 @@ class GeminiLiveADKConnection:
         self.frontend_ws = frontend_ws
 
         # Update tool context with WebSocket reference
-        for tool in [update_project_brief, create_campaign_strategy, generate_hero_images,
+        for tool in [update_project_brief, capture_visual_reference, generate_concept_sketches,
+                     select_concept, create_campaign_strategy, generate_hero_images, refine_hero_image,
+                     refine_all_hero_images, select_image_version,
                      generate_social_video, generate_audio_assets, generate_landing_page]:
             tool._frontend_ws = frontend_ws
             logger.info(f"✓ Set WebSocket reference on tool: {tool.__name__}")
@@ -2204,7 +2617,7 @@ class GeminiLiveADKConnection:
 
             # Wait for either task to complete
             tasks = [agent_to_client_task, client_to_agent_task]
-            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
 
             # Check for exceptions
             for task in done:
@@ -2392,6 +2805,79 @@ class GeminiLiveADKConnection:
 
                     except Exception as e:
                         logger.error(f"[ADK] ✗ Error processing image: {e}", exc_info=True)
+                        continue
+
+                # Handle video input (camera frames)
+                elif message.get("type") == "video_input" and message.get("data"):
+                    frame_data = message["data"]
+
+                    try:
+                        # Store the last frame for capture_visual_reference tool (silent)
+                        # Ensure it has the data URI prefix (frontend may strip it)
+                        if frame_data and not frame_data.startswith("data:"):
+                            frame_data = f"data:image/jpeg;base64,{frame_data}"
+                        self.last_video_frame = frame_data
+                        
+                        # Extract base64 data (handle data URIs)
+                        if frame_data.startswith("data:"):
+                            header, base64_data = frame_data.split(",", 1)
+                            mime_type = header.split(";")[0].replace("data:", "")
+                        else:
+                            base64_data = frame_data
+                            mime_type = "image/jpeg"  # default for video frames
+                        
+                        # Decode base64 to bytes
+                        frame_bytes = base64.b64decode(base64_data)
+                        
+                        logger.debug(f"[ADK] Video frame decoded: {len(frame_bytes)} bytes, mime={mime_type}")
+                        
+                        # Send to Gemini Live as realtime visual input
+                        self.live_request_queue.send_realtime(
+                            types.Blob(data=frame_bytes, mime_type=mime_type)
+                        )
+                        
+                    except Exception as e:
+                        logger.error(f"[ADK] ✗ Error processing video frame: {e}", exc_info=True)
+                        continue
+
+                # Handle screen share input (screen frames)
+                elif message.get("type") == "screen_input" and message.get("data"):
+                    frame_data = message["data"]
+
+                    try:
+                        # Store the last frame for capture_visual_reference tool
+                        # Ensure it has the data URI prefix (frontend may strip it)
+                        if frame_data and not frame_data.startswith("data:"):
+                            frame_data = f"data:image/jpeg;base64,{frame_data}"
+                        self.last_video_frame = frame_data
+
+                        # DEBUG: Log every 10th frame to confirm storage is working
+                        if not hasattr(self, '_screen_frame_count'):
+                            self._screen_frame_count = 0
+                        self._screen_frame_count += 1
+                        if self._screen_frame_count % 10 == 1:
+                            logger.info(f"[ADK] 🖥️ Screen frame #{self._screen_frame_count} stored, size: {len(frame_data)} chars, starts with: {frame_data[:30] if frame_data else 'None'}")
+                        
+                        # Extract base64 data (handle data URIs)
+                        if frame_data.startswith("data:"):
+                            header, base64_data = frame_data.split(",", 1)
+                            mime_type = header.split(";")[0].replace("data:", "")
+                        else:
+                            base64_data = frame_data
+                            mime_type = "image/jpeg"  # default for screen frames
+                        
+                        # Decode base64 to bytes
+                        frame_bytes = base64.b64decode(base64_data)
+                        
+                        logger.debug(f"[ADK] Screen frame decoded: {len(frame_bytes)} bytes, mime={mime_type}")
+                        
+                        # Send to Gemini Live as realtime visual input
+                        self.live_request_queue.send_realtime(
+                            types.Blob(data=frame_bytes, mime_type=mime_type)
+                        )
+                        
+                    except Exception as e:
+                        logger.error(f"[ADK] ✗ Error processing screen frame: {e}", exc_info=True)
                         continue
 
                 # Handle image selection from UI

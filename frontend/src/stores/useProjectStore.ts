@@ -87,6 +87,22 @@ export interface ProducerAnnouncement {
   timestamp: string;
 }
 
+// Concept preview for Smart Mirror iteration flow
+export interface ConceptPreview {
+  id: string;
+  url: string;
+  description: string;
+  iteration: number;
+}
+
+// Captured reference image for concept generation
+export interface CapturedReference {
+  id: string;
+  url: string;
+  description: string;
+  timestamp: number;
+}
+
 interface ProjectState {
   // Project data
   brief: ProjectBrief | null;
@@ -95,6 +111,11 @@ interface ProjectState {
   announcements: ProducerAnnouncement[];
   transcript: ConversationMessage[];
   changedFields: string[];
+
+  // Concept preview state (for Smart Mirror iteration)
+  previewConcepts: ConceptPreview[];
+  conceptIteration: number;
+  capturedReference: CapturedReference | null;
 
   // Audio state
   isConnected: boolean;
@@ -111,6 +132,12 @@ interface ProjectState {
   addTranscriptMessage: (message: ConversationMessage) => void;
   clearChangedFields: () => void;
 
+  // Concept preview actions
+  setPreviewConcepts: (concepts: ConceptPreview[], iteration: number) => void;
+  clearPreviewConcepts: () => void;
+  setCapturedReference: (ref: CapturedReference | null) => void;
+  clearSmartMirrorState: () => void; // Clear all when window closes
+
   setConnected: (connected: boolean) => void;
   setMicrophoneActive: (active: boolean) => void;
   setProducerSpeaking: (speaking: boolean) => void;
@@ -126,6 +153,9 @@ const initialState = {
   announcements: [],
   transcript: [],
   changedFields: [],
+  previewConcepts: [] as ConceptPreview[],
+  conceptIteration: 0,
+  capturedReference: null as CapturedReference | null,
   isConnected: false,
   isMicrophoneActive: false,
   isProducerSpeaking: false,
@@ -137,11 +167,20 @@ export const useProjectStore = create<ProjectState>((set) => ({
 
   setBrief: (brief) => set({ brief }),
 
-  updateBrief: (updates, changedFields = []) =>
-    set((state) => ({
-      brief: state.brief ? { ...state.brief, ...updates } : null,
-      changedFields,
-    })),
+  updateBrief: (updates, changedFields = []) => {
+    console.log('[Store] updateBrief called with changedFields:', changedFields);
+    if (updates.reference_images) {
+      console.log('[Store] updateBrief has reference_images:', updates.reference_images.length);
+    }
+    return set((state) => {
+      const newBrief = state.brief ? { ...state.brief, ...updates } : null;
+      console.log('[Store] After update, brief.reference_images:', newBrief?.reference_images?.length || 0);
+      return {
+        brief: newBrief,
+        changedFields,
+      };
+    });
+  },
 
   addAsset: (agentId, asset) =>
     set((state) => ({
@@ -170,6 +209,22 @@ export const useProjectStore = create<ProjectState>((set) => ({
     })),
 
   clearChangedFields: () => set({ changedFields: [] }),
+
+  // Concept preview actions
+  setPreviewConcepts: (concepts, iteration) => set({
+    previewConcepts: concepts,
+    conceptIteration: iteration
+  }),
+  clearPreviewConcepts: () => set({
+    previewConcepts: [],
+    conceptIteration: 0
+  }),
+  setCapturedReference: (ref) => set({ capturedReference: ref }),
+  clearSmartMirrorState: () => set({
+    previewConcepts: [],
+    conceptIteration: 0,
+    capturedReference: null
+  }),
 
   setConnected: (connected) => set({ isConnected: connected }),
   setMicrophoneActive: (active) => set({ isMicrophoneActive: active }),
