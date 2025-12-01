@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Camera, Monitor, X, Maximize2, Minimize2, Aperture, RefreshCw, Loader2 } from 'lucide-react';
+import { Camera, Monitor, X, Maximize2, Minimize2, Aperture, RefreshCw, Loader2, GripHorizontal } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useProjectStore } from '@/stores/useProjectStore';
 
@@ -13,14 +13,30 @@ interface MultimodalInputProps {
     onSelectConcept?: (conceptIndex: number) => void;
 }
 
+// Default position and size
+const DEFAULT_WIDTH = 480;
+const MIN_WIDTH = 280;
+const MAX_WIDTH = 800;
+
 export function MultimodalInput({ onFrameCapture, isActive, mode, onClose, onSelectConcept }: MultimodalInputProps) {
     const videoRef = useRef<HTMLVideoElement>(null);
     const streamRef = useRef<MediaStream | null>(null);
+    const containerRef = useRef<HTMLDivElement>(null);
     const onCloseRef = useRef(onClose);
     const [isMinimized, setIsMinimized] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [flash, setFlash] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
+
+    // Drag state - use null to indicate "use default CSS position"
+    const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
+    const [isDragging, setIsDragging] = useState(false);
+    const dragOffset = useRef({ x: 0, y: 0 });
+
+    // Resize state
+    const [width, setWidth] = useState(DEFAULT_WIDTH);
+    const [isResizing, setIsResizing] = useState(false);
+    const resizeStart = useRef({ x: 0, width: 0 });
 
     // Keep onClose ref updated
     useEffect(() => {
@@ -240,21 +256,129 @@ export function MultimodalInput({ onFrameCapture, isActive, mode, onClose, onSel
         };
     }, [isActive, streamReady, isMinimized, captureFrame]);
 
+    // Drag handlers - using left/top positioning
+    const handleDragStart = useCallback((e: React.MouseEvent) => {
+        // Only start drag from the header area (not buttons)
+        if ((e.target as HTMLElement).closest('button')) return;
+
+        const rect = containerRef.current?.getBoundingClientRect();
+        if (rect) {
+            dragOffset.current = {
+                x: e.clientX - rect.left,
+                y: e.clientY - rect.top
+            };
+            setIsDragging(true);
+        }
+        e.preventDefault();
+    }, []);
+
+    const handleDrag = useCallback((e: MouseEvent) => {
+        if (!isDragging) return;
+
+        const newX = e.clientX - dragOffset.current.x;
+        const newY = e.clientY - dragOffset.current.y;
+
+        // Keep within bounds
+        const containerWidth = containerRef.current?.offsetWidth || 300;
+        const containerHeight = containerRef.current?.offsetHeight || 200;
+        const maxX = window.innerWidth - containerWidth - 8;
+        const maxY = window.innerHeight - containerHeight - 8;
+
+        setPosition({
+            x: Math.max(8, Math.min(newX, maxX)),
+            y: Math.max(8, Math.min(newY, maxY))
+        });
+    }, [isDragging]);
+
+    const handleDragEnd = useCallback(() => {
+        setIsDragging(false);
+    }, []);
+
+    // Resize handlers
+    const handleResizeStart = useCallback((e: React.MouseEvent) => {
+        setIsResizing(true);
+        resizeStart.current = { x: e.clientX, width };
+        e.preventDefault();
+        e.stopPropagation();
+    }, [width]);
+
+    const handleResize = useCallback((e: MouseEvent) => {
+        if (!isResizing) return;
+
+        // Resize from left edge (since window is positioned from right)
+        const delta = resizeStart.current.x - e.clientX;
+        const newWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, resizeStart.current.width + delta));
+        setWidth(newWidth);
+    }, [isResizing]);
+
+    const handleResizeEnd = useCallback(() => {
+        setIsResizing(false);
+    }, []);
+
+    // Global mouse event listeners for drag and resize
+    useEffect(() => {
+        if (isDragging) {
+            window.addEventListener('mousemove', handleDrag);
+            window.addEventListener('mouseup', handleDragEnd);
+            return () => {
+                window.removeEventListener('mousemove', handleDrag);
+                window.removeEventListener('mouseup', handleDragEnd);
+            };
+        }
+    }, [isDragging, handleDrag, handleDragEnd]);
+
+    useEffect(() => {
+        if (isResizing) {
+            window.addEventListener('mousemove', handleResize);
+            window.addEventListener('mouseup', handleResizeEnd);
+            return () => {
+                window.removeEventListener('mousemove', handleResize);
+                window.removeEventListener('mouseup', handleResizeEnd);
+            };
+        }
+    }, [isResizing, handleResize, handleResizeEnd]);
+
     if (!isActive) return null;
 
     return (
         <div
+            ref={containerRef}
+            style={{
+                // Use left/top if dragged, otherwise use right/top for default position
+                ...(position ? {
+                    left: position.x,
+                    top: position.y,
+                } : {
+                    right: 16,
+                    top: 16,
+                }),
+                width: isMinimized ? 256 : width,
+            }}
             className={cn(
-                "absolute top-4 right-4 z-50 transition-all duration-300 ease-in-out",
-                isMinimized ? "w-64" : "w-[480px]"
+                "absolute z-50",
+                !isDragging && !isResizing && "transition-all duration-300 ease-in-out"
             )}
         >
+            {/* Resize Handle (left edge) */}
+            <div
+                onMouseDown={handleResizeStart}
+                className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize hover:bg-purple-500/30 transition-colors z-10"
+                title="Drag to resize"
+            />
+
             {/* Smart Mirror Window */}
             <div className="bg-black/90 backdrop-blur-md border border-purple-500/40 rounded-2xl overflow-hidden shadow-2xl shadow-purple-500/10 flex flex-col">
 
-                {/* Header */}
-                <div className="flex items-center justify-between px-4 py-3 bg-zinc-900/90 border-b border-zinc-800">
+                {/* Header - Draggable */}
+                <div
+                    onMouseDown={handleDragStart}
+                    className={cn(
+                        "flex items-center justify-between px-4 py-3 bg-zinc-900/90 border-b border-zinc-800",
+                        "cursor-grab active:cursor-grabbing select-none"
+                    )}
+                >
                     <div className="flex items-center gap-3">
+                        <GripHorizontal className="w-4 h-4 text-zinc-600" />
                         {mode === 'camera' ? <Camera className="w-5 h-5 text-purple-400" /> : <Monitor className="w-5 h-5 text-blue-400" />}
                         <span className="text-sm font-semibold text-zinc-100">
                             {mode === 'camera' ? 'Smart Mirror' : 'Screen Share'}
