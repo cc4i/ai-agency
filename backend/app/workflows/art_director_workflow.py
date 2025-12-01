@@ -851,21 +851,49 @@ Generate the refined image maintaining what works while implementing the request
         product_name = product_context.get("product_name", "product")
         theme = product_context.get("theme", "")
         product_category = product_context.get("product_category", "")
+        reference_category = product_context.get("reference_category", "sketch")
+        reference_description = product_context.get("reference_description", "")
 
-        prompt = f"""Create a CONCEPT SKETCH inspired by the reference image.
+        # Determine extraction instructions based on reference category
+        if reference_category == "sketch":
+            extraction_context = """CRITICAL: The reference image shows a hand-drawn sketch on paper (possibly in a notebook, held by hands,
+with background elements visible from a camera/video feed). IGNORE everything except the DRAWING ITSELF:
+- IGNORE: hands, notebook edges, spiral binding, lined paper, background (curtains, room, furniture, etc.)
+- IGNORE: any person visible, camera artifacts, lighting conditions
+- EXTRACT: ONLY the SKETCH/DRAWING content - the actual design being shown on the paper
+- INTERPRET: Transform the rough sketch into a polished, professional concept"""
+        elif reference_category == "screen":
+            extraction_context = """CRITICAL: The reference image shows a screen capture or digital image.
+- EXTRACT: The main visual content displayed on the screen
+- IGNORE: Screen bezels, reflections, or UI elements not part of the design"""
+        elif reference_category == "product":
+            extraction_context = """CRITICAL: The reference image shows a physical product.
+- EXTRACT: The product design, form, colors, and features
+- IGNORE: Background, hands holding it, or surrounding objects"""
+        else:
+            extraction_context = """Extract the main visual subject from the reference image.
+- Focus on the central design element
+- Ignore any incidental background or capture artifacts"""
 
-REFERENCE: Use the provided image as the PRIMARY visual inspiration. Match its:
-- Overall composition and layout
-- Style and artistic direction
-- Key visual elements and shapes
-- Color mood and tone
+        prompt = f"""Create a POLISHED CONCEPT IMAGE inspired by the visual reference.
+
+{extraction_context}
+
+FOCUS ON THE DESIGN CONTENT:
+- The main subject/object being shown (e.g., vehicle, product, character)
+- The composition and layout of the key elements
+- Any labels, text, or annotations that are part of the design
+- The design intent and style
+
+REFERENCE CONTEXT: {reference_description if reference_description else 'User-provided visual reference'}
 
 PRODUCT: {product_name} ({product_category})
 INSTRUCTION: {instruction}
 THEME: {theme}
 
-Generate a professional concept sketch that captures the essence of the reference
-while adapting it for {product_name}. Focus on composition, style, and mood."""
+OUTPUT: Generate a CLEAN, PROFESSIONAL concept image that brings the design to life.
+Do NOT include: notebooks, paper edges, hands, pens, video call UI, room backgrounds, or any capture artifacts.
+Create a standalone product visualization as if it were a professional marketing render or product concept art."""
 
         concepts = []
 
@@ -873,12 +901,21 @@ while adapting it for {product_name}. Focus on composition, style, and mood."""
             # Generate concepts sequentially using Gemini 2.5 Flash Image
             # (API doesn't support batch generation with reference images)
             for i in range(num_concepts):
+                variation_instruction = (
+                    "Focus on the core composition and primary elements from the design." if i == 0 else
+                    "Explore a slightly different angle or perspective of the design." if i == 1 else
+                    "Add more creative interpretation while keeping the essence of the design."
+                )
                 variation_prompt = f"""{prompt}
 
-VARIATION {i + 1} of {num_concepts}:
-{"Focus on the core composition and primary elements." if i == 0 else
- "Explore a slightly different angle or perspective." if i == 1 else
- "Add more creative interpretation while keeping the essence."}"""
+VARIATION {i + 1} of {num_concepts}: {variation_instruction}
+
+CRITICAL REMINDER: Output a CLEAN professional product image ONLY.
+- NO notebook, NO paper, NO lined pages
+- NO hands, NO fingers, NO person
+- NO room background, NO curtains, NO furniture
+- NO video call interface, NO camera artifacts
+ONLY the product/design itself on a clean background."""
 
                 try:
                     # Build contents with reference image + prompt

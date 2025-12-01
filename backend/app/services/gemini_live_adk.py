@@ -761,6 +761,8 @@ async def generate_concept_sketches(
 
     reference_image_data = captured_ref.get("url")
     reference_id = captured_ref.get("id")
+    reference_category = captured_ref.get("category", "sketch")
+    reference_description = captured_ref.get("description", "")
 
     if not reference_image_data:
         return {
@@ -791,11 +793,14 @@ async def generate_concept_sketches(
         await send_announcement("Art Director is creating concept sketches from your reference...", "info")
 
         # Call Art Director's generate_concept_sketches with the image data directly
+        # Pass category to help the model understand it's extracting from a video frame with a sketch
         result = await art_director.generate_concept_sketches(
             reference_image_data=reference_image_data,
             reference_id=reference_id,
             instruction=instruction,
-            project_id=project_id
+            project_id=project_id,
+            reference_category=reference_category,
+            reference_description=reference_description
         )
 
         if not result.get("success"):

@@ -222,7 +222,9 @@ class ArtDirectorAgent(AgentBase):
         reference_image_data: str,
         reference_id: str,
         instruction: str,
-        project_id: str
+        project_id: str,
+        reference_category: str = "sketch",
+        reference_description: str = ""
     ) -> Dict[str, Any]:
         """
         Generate concept sketches based on a visual reference.
@@ -238,11 +240,13 @@ class ArtDirectorAgent(AgentBase):
             reference_id: ID of the reference (for tracking)
             instruction: User's instruction for the concepts
             project_id: Project identifier
+            reference_category: Type of reference ("sketch", "product", "screen", "other")
+            reference_description: Description of what was captured
 
         Returns:
             Dict with success status and list of concept images
         """
-        logger.info(f"[Art Director] Generating concept sketches from reference: {reference_id}")
+        logger.info(f"[Art Director] Generating concept sketches from reference: {reference_id} (category: {reference_category})")
 
         try:
             from app.services.redis_client import redis_client
@@ -253,13 +257,16 @@ class ArtDirectorAgent(AgentBase):
             product_context = {
                 "product_name": brief.product_name if brief else "product",
                 "theme": brief.theme if brief else "",
-                "product_category": brief.product_category if brief else ""
+                "product_category": brief.product_category if brief else "",
+                "reference_category": reference_category,
+                "reference_description": reference_description
             }
 
             # Instantiate workflow
             workflow = ArtDirectorWorkflow()
 
             # Generate concepts using workflow
+            # Pass reference_category so the prompt knows to extract from sketch/video frame
             concepts = await workflow.generate_concepts(
                 reference_image_data=reference_image_data,
                 instruction=instruction,
