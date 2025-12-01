@@ -111,15 +111,14 @@ export function AgentStatusBar({ onReconfigure, selectedModel, selectedVoice, on
             );
           })}
 
-          {/* Add Remote Agent Button */}
+          {/* Add Remote Agent Button - compact icon style matching agent chips */}
           {onAddAgent && (
             <button
               onClick={onAddAgent}
-              className="flex items-center gap-2 px-4 py-2 rounded-full border border-dashed border-zinc-700 hover:border-purple-500/50 hover:bg-purple-500/10 transition-all group ml-3"
+              className="flex items-center gap-2 px-3 py-2 rounded-full border border-dashed border-zinc-700/50 hover:border-purple-500/50 hover:bg-purple-500/10 bg-zinc-900/80 transition-all group"
               title="Add remote A2A agent"
             >
               <Plus className="w-4 h-4 text-zinc-500 group-hover:text-purple-400 transition-colors" />
-              <span className="text-sm font-medium text-zinc-500 group-hover:text-purple-400">Add Agent</span>
             </button>
           )}
         </div>

@@ -14,7 +14,7 @@
 import { useProjectStore } from '@/stores/useProjectStore';
 import { cn } from '@/lib/utils';
 import { useState, useEffect, useMemo } from 'react';
-import { ExternalLink } from 'lucide-react';
+import { ExternalLink, Maximize2, X } from 'lucide-react';
 
 interface AssetDisplayProps {
   sendMessage?: (message: any) => void;
@@ -107,6 +107,8 @@ function ArtDirectorAssets({ data, sendMessage }: ArtDirectorAssetsProps) {
   const [showVersionHistory, setShowVersionHistory] = useState<{ [key: number]: boolean }>({});
   // Track which version is displayed for each image position (default to current version)
   const [displayedVersions, setDisplayedVersions] = useState<{ [key: number]: any }>({});
+  // Modal state for full-size image view
+  const [expandedImage, setExpandedImage] = useState<{ url: string; description: string } | null>(null);
 
   const handleImageSelect = (index: number, image: any) => {
     setSelectedImage(index);
@@ -207,7 +209,23 @@ function ArtDirectorAssets({ data, sendMessage }: ArtDirectorAssetsProps) {
                 )}
                 onClick={() => handleImageSelect(i, displayedImage)}
               >
-                <img src={displayedImage.url} alt={displayedImage.description || 'Hero image'} className="w-full aspect-video object-cover" />
+                <div className="relative group">
+                  <img src={displayedImage.url} alt={displayedImage.description || 'Hero image'} className="w-full aspect-video object-cover" />
+                  {/* Expand button overlay */}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setExpandedImage({
+                        url: displayedImage.url,
+                        description: displayedImage.description || displayedImage.generation_params?.prompt || 'Hero image'
+                      });
+                    }}
+                    className="absolute top-2 right-2 p-1.5 bg-black/60 hover:bg-black/80 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"
+                    title="View full size"
+                  >
+                    <Maximize2 className="w-4 h-4 text-white" />
+                  </button>
+                </div>
                 <div className="p-3 bg-zinc-800">
                   <div className="flex items-start justify-between gap-2">
                     <div className="text-xs text-zinc-400 flex-1">
@@ -271,6 +289,35 @@ function ArtDirectorAssets({ data, sendMessage }: ArtDirectorAssetsProps) {
           );
         })}
       </div>
+
+      {/* Full-size Image Modal */}
+      {expandedImage && (
+        <div
+          className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4"
+          onClick={() => setExpandedImage(null)}
+        >
+          <button
+            onClick={() => setExpandedImage(null)}
+            className="absolute top-4 right-4 p-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg transition-colors"
+            title="Close"
+          >
+            <X className="w-6 h-6 text-white" />
+          </button>
+          <div
+            className="max-w-[90vw] max-h-[90vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <img
+              src={expandedImage.url}
+              alt={expandedImage.description}
+              className="max-w-full max-h-[85vh] object-contain rounded-lg"
+            />
+            <div className="mt-3 text-center text-sm text-zinc-400">
+              {expandedImage.description}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

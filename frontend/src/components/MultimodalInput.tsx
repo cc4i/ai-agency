@@ -10,9 +10,10 @@ interface MultimodalInputProps {
     isActive: boolean;
     mode: 'camera' | 'screen' | null;
     onClose: () => void;
+    onSelectConcept?: (conceptIndex: number) => void;
 }
 
-export function MultimodalInput({ onFrameCapture, isActive, mode, onClose }: MultimodalInputProps) {
+export function MultimodalInput({ onFrameCapture, isActive, mode, onClose, onSelectConcept }: MultimodalInputProps) {
     const videoRef = useRef<HTMLVideoElement>(null);
     const streamRef = useRef<MediaStream | null>(null);
     const onCloseRef = useRef(onClose);
@@ -367,8 +368,9 @@ export function MultimodalInput({ onFrameCapture, isActive, mode, onClose }: Mul
                             {previewConcepts.map((concept, i: number) => (
                                 <div
                                     key={concept.id}
-                                    className="relative aspect-square rounded-xl overflow-hidden border-2 border-zinc-700 hover:border-purple-500 cursor-pointer transition-all hover:scale-[1.02] hover:shadow-lg hover:shadow-purple-500/20"
-                                    title={`${concept.description} - Say "use the ${i === 0 ? 'first' : i === 1 ? 'second' : 'third'} one" to select`}
+                                    onClick={() => onSelectConcept?.(i + 1)}
+                                    className="relative aspect-square rounded-xl overflow-hidden border-2 border-zinc-700 hover:border-purple-500 cursor-pointer transition-all hover:scale-[1.02] hover:shadow-lg hover:shadow-purple-500/20 active:scale-95"
+                                    title={`Click to select concept ${i + 1}`}
                                 >
                                     <img
                                         src={concept.url}
@@ -382,7 +384,7 @@ export function MultimodalInput({ onFrameCapture, isActive, mode, onClose }: Mul
                             ))}
                         </div>
                         <p className="text-xs text-zinc-500 mt-2 text-center">
-                            Say which one you like, or ask for changes
+                            Click to select, or say which one you like
                         </p>
                     </div>
                 )}

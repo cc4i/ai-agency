@@ -812,71 +812,133 @@ Generate the refined image maintaining what works while implementing the request
     ) -> List[Dict[str, Any]]:
         """
         Generate fast concept sketches based on a reference image.
-        
+
         Used for the concept validation loop - generates low-fidelity variations
         to confirm style/direction before creating final hero images.
-        
+
+        Uses Gemini 2.5 Flash Image with the reference image to generate
+        concepts that actually incorporate the user's visual input.
+
         Args:
-            reference_image_data: Base64-encoded reference image
+            reference_image_data: Base64-encoded reference image (data URI format)
             instruction: User's instruction for the concepts
             product_context: Product details from brief
             num_concepts: Number of concept variations to generate (default 3)
-            
+
         Returns:
             List of ImageAsset dicts with type="concept"
         """
-        logger.info(f"Generating {num_concepts} concept sketches based on reference")
-        
+        import base64
+        import time
+        from google.genai.types import Part
+        from app.services.google_ai_client import genai_client
+
+        logger.info(f"Generating {num_concepts} concept sketches based on reference image")
+
+        # Extract base64 from data URI
+        reference_b64 = ""
+        if reference_image_data.startswith("data:image"):
+            try:
+                _, reference_b64 = reference_image_data.split(",", 1)
+                logger.info(f"[Concepts] Extracted reference image: {len(reference_b64)} chars")
+            except Exception as e:
+                logger.warning(f"[Concepts] Failed to parse reference image data URI: {e}")
+        else:
+            # Assume it's already base64
+            reference_b64 = reference_image_data
+
         # Build concept generation prompt
         product_name = product_context.get("product_name", "product")
         theme = product_context.get("theme", "")
-        
-        prompt = f"""Create a CONCEPT SKETCH for {product_name}.
+        product_category = product_context.get("product_category", "")
 
-Style: Loose, artistic concept art - NOT a final polished image.
-Reference: Use the provided image as visual inspiration.
-Instruction: {instruction}
-Theme: {theme}
+        prompt = f"""Create a CONCEPT SKETCH inspired by the reference image.
 
-Generate a quick concept sketch that captures the essence and style direction.
-Focus on composition and mood rather than fine details."""
+REFERENCE: Use the provided image as the PRIMARY visual inspiration. Match its:
+- Overall composition and layout
+- Style and artistic direction
+- Key visual elements and shapes
+- Color mood and tone
+
+PRODUCT: {product_name} ({product_category})
+INSTRUCTION: {instruction}
+THEME: {theme}
+
+Generate a professional concept sketch that captures the essence of the reference
+while adapting it for {product_name}. Focus on composition, style, and mood."""
+
+        concepts = []
 
         try:
-            # Use Imagen for fast generation
-            # Note: Current ImagenClient wrapper doesn't support reference_images yet
-            # We'll rely on the prompt description for now
-            
-            images_bytes = await self.google_ai_client.generate_images(
-                prompt=prompt,
-                number_of_images=num_concepts,
-                aspect_ratio="1:1",
-            )
-            
-            concepts = []
-            import base64
-            import time
-            
-            for i, img_bytes in enumerate(images_bytes):
-                img_b64 = base64.b64encode(img_bytes).decode('utf-8')
-                concept = {
-                    "asset_id": f"concept_{int(time.time() * 1000)}_{i}",
-                    "url": f"data:image/png;base64,{img_b64}",
-                    "type": "concept",
-                    "prompt": prompt,
-                    "generation_number": i + 1,
-                    "timestamp": time.time(),
-                    "metadata": {
-                        "is_concept": True,
-                        "reference_based": True
-                    }
-                }
-                concepts.append(concept)
-            
-            logger.info(f"Generated {len(concepts)} concept sketches")
+            # Generate concepts sequentially using Gemini 2.5 Flash Image
+            # (API doesn't support batch generation with reference images)
+            for i in range(num_concepts):
+                variation_prompt = f"""{prompt}
+
+VARIATION {i + 1} of {num_concepts}:
+{"Focus on the core composition and primary elements." if i == 0 else
+ "Explore a slightly different angle or perspective." if i == 1 else
+ "Add more creative interpretation while keeping the essence."}"""
+
+                try:
+                    # Build contents with reference image + prompt
+                    contents = []
+
+                    # Add reference image
+                    if reference_b64:
+                        contents.append(Part(
+                            inline_data={'mime_type': 'image/jpeg', 'data': reference_b64}
+                        ))
+                        logger.info(f"[Concepts] Added reference image to concept {i + 1}")
+
+                    # Add text prompt
+                    contents.append(Part(text=variation_prompt))
+
+                    # Generate with Gemini 2.5 Flash Image (same model as hero images)
+                    logger.info(f"[Concepts] Generating concept {i + 1}/{num_concepts}...")
+                    response = await genai_client.aio.models.generate_content(
+                        model="gemini-2.5-flash-image",
+                        contents=contents,
+                        config=types.GenerateContentConfig(
+                            response_modalities=['Image'],
+                            image_config=types.ImageConfig(
+                                aspect_ratio="16:9",
+                            )
+                        )
+                    )
+
+                    # Extract image from response
+                    for part in response.parts:
+                        if hasattr(part, 'inline_data') and part.inline_data:
+                            image_bytes = part.inline_data.data
+                            img_b64 = base64.b64encode(image_bytes).decode('utf-8')
+
+                            concept = {
+                                "asset_id": f"concept_{int(time.time() * 1000)}_{i}",
+                                "url": f"data:image/png;base64,{img_b64}",
+                                "type": "concept",
+                                "prompt": variation_prompt,
+                                "generation_number": i + 1,
+                                "timestamp": time.time(),
+                                "metadata": {
+                                    "is_concept": True,
+                                    "reference_based": True,
+                                    "has_reference_image": bool(reference_b64)
+                                }
+                            }
+                            concepts.append(concept)
+                            logger.info(f"[Concepts] ✓ Generated concept {i + 1}: {len(image_bytes)} bytes")
+                            break
+
+                except Exception as e:
+                    logger.error(f"[Concepts] Error generating concept {i + 1}: {e}")
+                    continue
+
+            logger.info(f"[Concepts] Generated {len(concepts)}/{num_concepts} concept sketches")
             return concepts
-            
+
         except Exception as e:
-            logger.error(f"Error generating concepts: {e}", exc_info=True)
+            logger.error(f"[Concepts] Error generating concepts: {e}", exc_info=True)
             return []
 
     async def rollback_to_version(

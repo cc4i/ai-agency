@@ -9,8 +9,9 @@
 
 'use client';
 
-import { X } from 'lucide-react';
+import { X, Maximize2 } from 'lucide-react';
 import { useState } from 'react';
+import { ImageExpandModal } from './ImageExpandModal';
 import { API_BASE_URL } from '@/config';
 import { cn } from '@/lib/utils';
 import { useProjectStore } from '@/stores/useProjectStore';
@@ -29,6 +30,7 @@ interface ReferenceImagesDisplayProps {
 
 export function ReferenceImagesDisplay({ images, projectId }: ReferenceImagesDisplayProps) {
   const [deleting, setDeleting] = useState(false);
+  const [expandedImage, setExpandedImage] = useState<{ url: string; description: string } | null>(null);
   const { updateBrief } = useProjectStore();
 
   const handleDelete = async (assetId: string) => {
@@ -72,27 +74,42 @@ export function ReferenceImagesDisplay({ images, projectId }: ReferenceImagesDis
   const image = images[0];
 
   return (
-    <div className="relative group">
-      <img
-        src={image.url}
-        alt={image.description}
-        className="w-full rounded border border-zinc-700"
-      />
+    <>
+      <div className="relative group">
+        <img
+          src={image.url}
+          alt={image.description}
+          className="w-full rounded border border-zinc-700"
+        />
 
-      {/* Hover overlay with delete button */}
-      <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity rounded flex items-start justify-end p-2">
-        <button
-          onClick={() => handleDelete(image.asset_id)}
-          disabled={deleting}
-          className={cn(
-            "bg-red-500 hover:bg-red-600 p-1 rounded text-white transition-colors",
-            deleting && "opacity-50 cursor-not-allowed"
-          )}
-          title="Delete reference image"
-        >
-          <X className="w-4 h-4" />
-        </button>
+        {/* Hover overlay with expand and delete buttons */}
+        <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity rounded flex items-start justify-end p-2 gap-1">
+          <button
+            onClick={() => setExpandedImage({ url: image.url, description: image.description })}
+            className="bg-zinc-700 hover:bg-zinc-600 p-1 rounded text-white transition-colors"
+            title="View full size"
+          >
+            <Maximize2 className="w-4 h-4" />
+          </button>
+          <button
+            onClick={() => handleDelete(image.asset_id)}
+            disabled={deleting}
+            className={cn(
+              "bg-red-500 hover:bg-red-600 p-1 rounded text-white transition-colors",
+              deleting && "opacity-50 cursor-not-allowed"
+            )}
+            title="Delete reference image"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
       </div>
-    </div>
+
+      {/* Full-size Image Modal */}
+      <ImageExpandModal
+        image={expandedImage}
+        onClose={() => setExpandedImage(null)}
+      />
+    </>
   );
 }

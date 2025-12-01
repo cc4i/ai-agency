@@ -13,12 +13,15 @@
 import { useEffect, useState } from 'react';
 import { useProjectStore } from '@/stores/useProjectStore';
 import { cn } from '@/lib/utils';
+import { Maximize2 } from 'lucide-react';
 import { ReferenceImageUpload } from './ReferenceImageUpload';
 import { ReferenceImagesDisplay } from './ReferenceImagesDisplay';
+import { ImageExpandModal } from './ImageExpandModal';
 
 export function ProjectBriefPanel() {
   const { brief, changedFields, clearChangedFields } = useProjectStore();
   const [highlightedFields, setHighlightedFields] = useState<Set<string>>(new Set());
+  const [expandedImage, setExpandedImage] = useState<{ url: string; description: string } | null>(null);
 
   useEffect(() => {
     if (changedFields.length > 0) {
@@ -142,11 +145,26 @@ export function ProjectBriefPanel() {
             )}
           >
             <div className="text-xs font-medium text-zinc-400 mb-2">Selected Hero Image</div>
-            <img
-              src={brief.selected_image.url}
-              alt="Selected hero"
-              className="w-full rounded border border-zinc-700"
-            />
+            <div className="relative group">
+              <img
+                src={brief.selected_image.url}
+                alt="Selected hero"
+                className="w-full rounded border border-zinc-700"
+              />
+              {/* Hover overlay with expand button */}
+              <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity rounded flex items-start justify-end p-2">
+                <button
+                  onClick={() => setExpandedImage({
+                    url: brief.selected_image!.url,
+                    description: brief.selected_image!.description || 'Selected hero image'
+                  })}
+                  className="bg-zinc-700 hover:bg-zinc-600 p-1 rounded text-white transition-colors"
+                  title="View full size"
+                >
+                  <Maximize2 className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
           </div>
         )}
 
@@ -154,11 +172,26 @@ export function ProjectBriefPanel() {
         {!brief.selected_image && brief.initial_sketch_url && (
           <div>
             <div className="text-xs font-medium text-zinc-400 mb-2">Initial Sketch</div>
-            <img
-              src={brief.initial_sketch_url}
-              alt="Initial sketch"
-              className="w-full rounded border border-zinc-700"
-            />
+            <div className="relative group">
+              <img
+                src={brief.initial_sketch_url}
+                alt="Initial sketch"
+                className="w-full rounded border border-zinc-700"
+              />
+              {/* Hover overlay with expand button */}
+              <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity rounded flex items-start justify-end p-2">
+                <button
+                  onClick={() => setExpandedImage({
+                    url: brief.initial_sketch_url!,
+                    description: 'Initial sketch'
+                  })}
+                  className="bg-zinc-700 hover:bg-zinc-600 p-1 rounded text-white transition-colors"
+                  title="View full size"
+                >
+                  <Maximize2 className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </div>
@@ -167,6 +200,12 @@ export function ProjectBriefPanel() {
           <div>Updated: {new Date(brief.updated_at).toLocaleTimeString()}</div>
         </div>
       </div>
+
+      {/* Full-size Image Modal */}
+      <ImageExpandModal
+        image={expandedImage}
+        onClose={() => setExpandedImage(null)}
+      />
     </div>
   );
 }

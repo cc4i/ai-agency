@@ -182,6 +182,11 @@ export default function WorkspaceClient() {
             mode={multimodalMode}
             onClose={() => setMultimodalMode(null)}
             onFrameCapture={handleFrameCapture}
+            onSelectConcept={(conceptIndex) => {
+              // Send DIRECT select_concept message (bypasses Gemini, saves directly)
+              console.log(`[WorkspaceClient] Selecting concept ${conceptIndex}, sending direct select_concept message`);
+              sendMessage({ type: 'select_concept', data: { concept_index: conceptIndex } });
+            }}
           />
         </div>
 

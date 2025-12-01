@@ -65,6 +65,43 @@ if settings.google_application_credentials:
 logger = logging.getLogger(__name__)
 
 # ============================================================================
+# STATE MACHINE - Data-driven workflow guidance for Gemini
+# ============================================================================
+
+def build_state_response(
+    phase: str,
+    valid_actions: List[str],
+    user_prompt: str = "",
+    context: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    Build consistent state object for tool responses.
+
+    This creates a state machine that guides Gemini's next action
+    instead of relying on prompt memorization. Every tool returns
+    this structure so Gemini knows:
+    - Where we are in the workflow (phase)
+    - What tools can be called next (valid_actions)
+    - What to tell/ask the user (user_prompt)
+
+    Args:
+        phase: Current workflow phase (e.g., "reference_captured", "concepts_displayed")
+        valid_actions: List of tool names that can be called next
+        user_prompt: Suggested natural language response to user
+        context: Additional context data for the phase
+
+    Returns:
+        State dict to include in tool response
+    """
+    return {
+        "phase": phase,
+        "valid_actions": valid_actions,
+        "user_prompt": user_prompt,
+        "context": context or {}
+    }
+
+
+# ============================================================================
 # HELPER FUNCTIONS - WebSocket broadcasting utilities & data sanitization
 # ============================================================================
 
@@ -597,11 +634,25 @@ async def capture_visual_reference(
     # Get the last video frame from the connection
     if connection is None:
         logger.warning("[TOOL] No connection available")
-        return {"success": False, "error": "No connection available"}
+        return {
+            "success": False,
+            "state": build_state_response(
+                phase="error",
+                valid_actions=["capture_visual_reference"],
+                user_prompt="I'm having trouble with the camera connection. Could you try again?"
+            )
+        }
 
     if not hasattr(connection, 'last_video_frame'):
         logger.warning("[TOOL] Connection has no last_video_frame attribute")
-        return {"success": False, "error": "Connection missing video frame attribute"}
+        return {
+            "success": False,
+            "state": build_state_response(
+                phase="error",
+                valid_actions=["capture_visual_reference"],
+                user_prompt="Camera isn't ready yet. Make sure it's enabled and try again."
+            )
+        }
 
     frame_data = connection.last_video_frame
     logger.info(f"[TOOL] last_video_frame: {type(frame_data)}, length: {len(frame_data) if frame_data else 0}")
@@ -615,7 +666,14 @@ async def capture_visual_reference(
 
     if not frame_data:
         logger.warning("[TOOL] No video frame cached - ensure camera is on and sending frames")
-        return {"success": False, "error": "No recent video frame to capture. Please ensure camera is enabled."}
+        return {
+            "success": False,
+            "state": build_state_response(
+                phase="awaiting_visual",
+                valid_actions=["capture_visual_reference"],
+                user_prompt="I don't see a video feed yet. Make sure camera or screen share is on, then I'll capture it."
+            )
+        }
 
     # Create a reference ID
     reference_id = f"ref_{int(time.time() * 1000)}"
@@ -642,7 +700,17 @@ async def capture_visual_reference(
     return {
         "success": True,
         "reference_id": reference_id,
-        "message": f"Visual reference '{description}' captured. Now call generate_concept_sketches to create concept variations."
+        "state": build_state_response(
+            phase="reference_captured",
+            valid_actions=["generate_concept_sketches"],
+            user_prompt="Reference captured. Generating concept sketches now...",
+            context={
+                "reference_id": reference_id,
+                "description": description,
+                "category": category,
+                "auto_action": "IMMEDIATELY call generate_concept_sketches(instruction='explore creative variations based on the captured reference')"
+            }
+        )
     }
 
 
@@ -671,20 +739,38 @@ async def generate_concept_sketches(
 
     # Get captured reference from connection's temporary storage
     if connection is None:
-        return {"success": False, "error": "No connection available"}
+        return {
+            "success": False,
+            "state": build_state_response(
+                phase="error",
+                valid_actions=["capture_visual_reference"],
+                user_prompt="Connection issue. Let's try capturing your visual again."
+            )
+        }
 
     captured_ref = getattr(connection, 'captured_reference', None)
     if not captured_ref:
         return {
             "success": False,
-            "error": "No captured reference found. Please capture a visual reference first using capture_visual_reference."
+            "state": build_state_response(
+                phase="no_reference",
+                valid_actions=["capture_visual_reference"],
+                user_prompt="I need to capture your visual first. Can you show me what you're working with?"
+            )
         }
 
     reference_image_data = captured_ref.get("url")
     reference_id = captured_ref.get("id")
 
     if not reference_image_data:
-        return {"success": False, "error": "Captured reference has no image data"}
+        return {
+            "success": False,
+            "state": build_state_response(
+                phase="no_reference",
+                valid_actions=["capture_visual_reference"],
+                user_prompt="The captured image didn't save properly. Let me try capturing it again."
+            )
+        }
 
     logger.info(f"[TOOL] Using captured reference: {reference_id}")
 
@@ -724,8 +810,16 @@ async def generate_concept_sketches(
         concept_previews = result.get("concepts", [])
         connection.pending_concepts = concept_previews
 
+        # ALSO store to Redis as reliable backup
+        await redis_client.client.set(
+            f"pending_concepts:{project_id}",
+            json.dumps(concept_previews),
+            ex=3600  # 1 hour expiry
+        )
+
         # Debug: Log concepts being stored
-        logger.info(f"[TOOL] Storing {len(concept_previews)} concepts on connection.pending_concepts")
+        logger.info(f"[TOOL] ✅ Stored {len(concept_previews)} concepts to Redis and connection")
+        logger.info(f"[TOOL] Connection object id: {id(connection)}")
         for i, cp in enumerate(concept_previews):
             url_len = len(cp.get("url", "")) if cp.get("url") else 0
             logger.info(f"[TOOL]   Concept {i+1}: id={cp.get('id')}, url_length={url_len}")
@@ -741,25 +835,50 @@ async def generate_concept_sketches(
 
         logger.info(f"[TOOL] Generated {len(concept_previews)} concept previews (iteration {iteration})")
 
-        return result
+        # Return with state machine guidance
+        return {
+            "success": True,
+            "concepts": concept_previews,
+            "state": build_state_response(
+                phase="concepts_displayed",
+                valid_actions=["select_concept", "generate_concept_sketches"],
+                user_prompt="Three concepts ready. Which direction resonates - one, two, or three?",
+                context={
+                    "concept_count": len(concept_previews),
+                    "iteration": iteration,
+                    "reference_id": reference_id
+                }
+            )
+        }
 
     except Exception as e:
         logger.error(f"[TOOL] Error generating concept sketches: {e}", exc_info=True)
         await send_agent_status("art_director", "error", "")
-        return {"success": False, "error": str(e)}
+        return {
+            "success": False,
+            "state": build_state_response(
+                phase="error",
+                valid_actions=["generate_concept_sketches", "capture_visual_reference"],
+                user_prompt=f"Art Director hit a snag. Want to try again?",
+                context={"error": str(e)}
+            )
+        }
 
 
 async def select_concept(
     concept_id: str
 ) -> Dict[str, Any]:
     """
-    Save user's selected concept to the project brief.
+    Save user's selected concept to the project brief (CO-DESIGN FLOW ONLY).
 
-    Call this when the user chooses a concept from the Smart Mirror preview.
-    The user might say "I like the first one", "use the second concept",
-    "the third one looks good", etc.
+    IMPORTANT: Only use this for CO-DESIGN workflow after generate_concept_sketches.
+    Do NOT use this for CAMPAIGN workflow hero image selection.
 
-    This saves the selected concept to brief.reference_images.
+    For HERO IMAGES (Campaign Flow): Use update_project_brief(selected_image_variation=N)
+    For CONCEPT SKETCHES (Co-Design Flow): Use this select_concept function
+
+    Call this when the user chooses a concept from the Smart Mirror preview
+    AFTER generate_concept_sketches was called.
 
     Args:
         concept_id: Which concept to select. Can be:
@@ -774,25 +893,52 @@ async def select_concept(
     frontend_ws = getattr(select_concept, '_frontend_ws', None)
     connection = getattr(select_concept, '_connection', None)
 
-    logger.info(f"[TOOL] select_concept called: {concept_id}")
+    logger.info(f"[TOOL] ✨ select_concept called: concept_id='{concept_id}'")
+    logger.info(f"[TOOL] select_concept context: project_id={project_id}, connection={'present' if connection else 'NONE'}")
 
     try:
-        # Get pending concepts from connection
-        if connection is None:
-            logger.error("[TOOL] select_concept: No connection available")
-            return {"success": False, "error": "No connection available"}
+        # Get pending concepts - try Redis first (most reliable), then connection object
+        pending_concepts = []
 
-        pending_concepts = getattr(connection, 'pending_concepts', [])
-        logger.info(f"[TOOL] select_concept: Found {len(pending_concepts)} pending concepts")
+        # Try Redis first (stored by generate_concept_sketches)
+        redis_concepts = await redis_client.client.get(f"pending_concepts:{project_id}")
+        if redis_concepts:
+            pending_concepts = json.loads(redis_concepts)
+            logger.info(f"[TOOL] select_concept: Found {len(pending_concepts)} pending concepts in Redis")
+        elif connection is not None:
+            # Fallback to connection object
+            pending_concepts = getattr(connection, 'pending_concepts', [])
+            logger.info(f"[TOOL] select_concept: Found {len(pending_concepts)} pending concepts on connection")
+        else:
+            logger.warning("[TOOL] select_concept: No connection available, Redis was empty")
+
         for i, pc in enumerate(pending_concepts):
             url_len = len(pc.get("url", "")) if pc.get("url") else 0
             logger.info(f"[TOOL]   Pending concept {i+1}: id={pc.get('id')}, url_length={url_len}")
 
         if not pending_concepts:
-            return {
-                "success": False,
-                "error": "No pending concepts to select from. Generate concepts first."
-            }
+            # Check if this is a hero image selection (Campaign flow) vs concept selection (Co-Design flow)
+            brief = await redis_client.get_project_brief(project_id)
+            if brief and brief.hero_images and len(brief.hero_images) > 0:
+                # User likely wants to select a hero image, not a concept
+                return {
+                    "success": False,
+                    "state": build_state_response(
+                        phase="hero_images_displayed",
+                        valid_actions=["update_project_brief"],
+                        user_prompt="Which hero image would you like to use - one, two, three, or four?",
+                        context={"correction": "Use update_project_brief(selected_image_variation=N) for hero images"}
+                    )
+                }
+            else:
+                return {
+                    "success": False,
+                    "state": build_state_response(
+                        phase="no_concepts",
+                        valid_actions=["capture_visual_reference"],
+                        user_prompt="I need to see your visual first. Can you show me what you're working with?"
+                    )
+                }
 
         # Find the selected concept
         # Support both index-based selection ("1", "2", "3", "first", "second", "third") and ID match
@@ -822,7 +968,12 @@ async def select_concept(
             logger.error(f"[TOOL] Concept '{concept_id}' not found. Available concepts: {available_count}")
             return {
                 "success": False,
-                "error": f"Concept '{concept_id}' not found. Available: first, second, third (or 1, 2, 3)"
+                "state": build_state_response(
+                    phase="concepts_displayed",
+                    valid_actions=["select_concept"],
+                    user_prompt=f"I have {available_count} concepts. Which one - one, two, or three?",
+                    context={"available_count": available_count}
+                )
             }
 
         logger.info(f"[TOOL] Found selected concept: id={selected.get('id')}, url_length={len(selected.get('url', ''))}")
@@ -830,12 +981,26 @@ async def select_concept(
         # Validate concept has image data
         if not selected.get("url"):
             logger.error(f"[TOOL] Selected concept has no URL/image data")
-            return {"success": False, "error": "Selected concept has no image data"}
+            return {
+                "success": False,
+                "state": build_state_response(
+                    phase="error",
+                    valid_actions=["generate_concept_sketches"],
+                    user_prompt="That concept didn't save correctly. Let me regenerate them."
+                )
+            }
 
         # Get project brief
         brief = await redis_client.get_project_brief(project_id)
         if not brief:
-            return {"success": False, "error": "Project not found"}
+            return {
+                "success": False,
+                "state": build_state_response(
+                    phase="error",
+                    valid_actions=["update_project_brief"],
+                    user_prompt="Project setup issue. Let's start fresh - tell me about your product."
+                )
+            }
 
         # Create ImageAsset and save to brief.reference_images
         from app.models.assets import ImageAsset
@@ -898,12 +1063,25 @@ async def select_concept(
         return {
             "success": True,
             "selected_concept": selected,
-            "message": f"Great choice! The concept has been saved to your project. You can now use it for hero image generation."
+            "state": build_state_response(
+                phase="concept_selected",
+                valid_actions=["update_project_brief", "create_campaign_strategy", "generate_hero_images"],
+                user_prompt="Great choice! Ready to build a campaign around this? Tell me about the product.",
+                context={"concept_id": selected["id"], "has_reference": True}
+            )
         }
 
     except Exception as e:
         logger.error(f"[TOOL] Error selecting concept: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {
+            "success": False,
+            "state": build_state_response(
+                phase="error",
+                valid_actions=["select_concept", "generate_concept_sketches"],
+                user_prompt="Something went wrong saving that. Want to try again?",
+                context={"error": str(e)}
+            )
+        }
 
 
 # ============================================================================
@@ -987,17 +1165,25 @@ async def update_project_brief(
                 logger.info(f"[TOOL] Found image variation {selected_image_variation}: {selected_image.description}")
             else:
                 logger.error(f"[TOOL] Image variation {selected_image_variation} not found in hero_images")
+                available = [img.generation_params.get('variation') for img in brief.hero_images]
                 return validate_tool_result({
                     "success": False,
-                    "error": f"Image variation {selected_image_variation} not found",
-                    "message": f"Could not find image variation {selected_image_variation}. Available variations: {[img.generation_params.get('variation') for img in brief.hero_images]}"
+                    "state": build_state_response(
+                        phase="hero_images_displayed",
+                        valid_actions=["update_project_brief"],
+                        user_prompt=f"I have options {available}. Which one would you like?",
+                        context={"available_variations": available}
+                    )
                 })
         else:
             logger.error(f"[TOOL] No hero images found in project brief")
             return validate_tool_result({
                 "success": False,
-                "error": "No hero images available",
-                "message": "No hero images have been generated yet. Please generate images first."
+                "state": build_state_response(
+                    phase="no_hero_images",
+                    valid_actions=["generate_hero_images"],
+                    user_prompt="We need to generate hero images first. Ready to create some visuals?"
+                )
             })
 
     # Fallback: Handle image selection by URL (for UI clicks)
@@ -1033,11 +1219,40 @@ async def update_project_brief(
         except Exception as e:
             logger.error(f"[TOOL] Failed to broadcast brief update: {e}")
 
+    # Determine next phase based on what was updated
+    updated_fields = list(updates.keys())
+
+    # Determine appropriate next actions and prompt based on context
+    if "selected_image" in updated_fields:
+        # User selected a hero image - ready for final assets
+        next_phase = "image_selected"
+        next_actions = ["generate_social_video", "generate_audio_assets", "generate_landing_page"]
+        next_prompt = "Great choice! Ready to create assets - video, audio, or landing page?"
+    elif "selected_slogan" in updated_fields:
+        # User selected a slogan - ready for hero images
+        next_phase = "slogan_selected"
+        next_actions = ["generate_hero_images"]
+        next_prompt = "Love that slogan! Let's create some hero images."
+    elif brief.product_name and brief.product_category:
+        # Basic info captured - ready for strategy
+        next_phase = "brief_ready"
+        next_actions = ["create_campaign_strategy", "update_project_brief"]
+        next_prompt = "Got it! Ready to create some campaign slogans?"
+    else:
+        # Still gathering info
+        next_phase = "gathering_info"
+        next_actions = ["update_project_brief"]
+        next_prompt = "What else can you tell me about the product?"
+
     tool_result = {
         "success": True,
-        "message": f"Updated project brief for {product_name or 'product'}",
-        "updated_fields": list(updates.keys()),
-        "brief": brief.model_dump(mode="json")
+        "updated_fields": updated_fields,
+        "state": build_state_response(
+            phase=next_phase,
+            valid_actions=next_actions,
+            user_prompt=next_prompt,
+            context={"product_name": brief.product_name, "has_slogan": bool(brief.selected_slogan), "has_image": bool(brief.selected_image)}
+        )
     }
 
     # Validate before returning to prevent WebSocket 1007 errors
@@ -1137,9 +1352,14 @@ async def create_campaign_strategy(
 
         tool_result = {
             "success": True,
-            "message": f"Strategy Agent generated {len(slogans)} slogans and {len(personas)} personas. Present each slogan to the user.",
             "slogans": slogans,
-            "personas": personas
+            "personas": personas,
+            "state": build_state_response(
+                phase="slogans_ready",
+                valid_actions=["update_project_brief"],
+                user_prompt="Three slogans ready. Which one captures the vibe - one, two, or three?",
+                context={"slogan_count": len(slogans), "persona_count": len(personas)}
+            )
         }
 
         # Validate before returning to prevent WebSocket 1007 errors
@@ -1150,8 +1370,12 @@ async def create_campaign_strategy(
         await send_agent_status("strategy", "error", "")
         return validate_tool_result({
             "success": False,
-            "error": str(e),
-            "message": f"Strategy Agent encountered an error: {str(e)}"
+            "state": build_state_response(
+                phase="error",
+                valid_actions=["create_campaign_strategy", "update_project_brief"],
+                user_prompt="Strategy team hit a snag. Want to try again or add more product details?",
+                context={"error": str(e)}
+            )
         })
 
 
@@ -1366,8 +1590,13 @@ async def generate_hero_images(
 
         tool_result = {
             "success": True,
-            "message": f"Art Director generated {len(images)} hero images. They have been displayed to the user. Describe each variation briefly.",
-            "image_summaries": image_summaries
+            "image_summaries": image_summaries,
+            "state": build_state_response(
+                phase="hero_images_displayed",
+                valid_actions=["update_project_brief", "refine_hero_image", "refine_all_hero_images"],
+                user_prompt="Four hero images ready. Which one speaks to you - one, two, three, or four?",
+                context={"image_count": len(images), "generation": new_generation_number}
+            )
         }
 
         # Validate before returning to prevent WebSocket 1007 errors
@@ -1378,8 +1607,12 @@ async def generate_hero_images(
         await send_agent_status("art_director", "error", "")
         return validate_tool_result({
             "success": False,
-            "error": str(e),
-            "message": f"Art Director encountered an error: {str(e)}"
+            "state": build_state_response(
+                phase="error",
+                valid_actions=["generate_hero_images", "update_project_brief"],
+                user_prompt="Art Director hit a snag. Want to try again?",
+                context={"error": str(e)}
+            )
         })
 
 
@@ -1444,13 +1677,15 @@ async def generate_social_video(
 
         # Validate prerequisites
         if not image_url or image_url == "":
-            error_msg = "PREREQUISITE MISSING: User has not selected a hero image yet. You MUST ask the user which of the 4 hero images they would like to use before you can generate a video. Do NOT tell the user you've triggered the video producer - instead ask them to select an image first."
-            logger.warning(f"[TOOL] {error_msg}")
+            logger.warning(f"[TOOL] No image selected for video generation")
             await send_agent_status("video_producer", "error", "")
             return validate_tool_result({
                 "success": False,
-                "error": "missing_prerequisite",
-                "message": error_msg
+                "state": build_state_response(
+                    phase="need_image_selection",
+                    valid_actions=["update_project_brief"],
+                    user_prompt="Which hero image should we use for the video - one, two, three, or four?"
+                )
             })
 
         # Log image URL (truncated for readability)
@@ -1490,8 +1725,12 @@ async def generate_social_video(
 
         tool_result = {
             "success": True,
-            "message": "Video Producer has created a social media video",
-            "result": result
+            "result": result,
+            "state": build_state_response(
+                phase="video_ready",
+                valid_actions=["generate_audio_assets", "generate_landing_page"],
+                user_prompt="Video is ready! Want to create audio assets or a landing page next?"
+            )
         }
 
         # Validate before returning to prevent WebSocket 1007 errors
@@ -1502,8 +1741,12 @@ async def generate_social_video(
         await send_agent_status("video_producer", "error", "")
         return validate_tool_result({
             "success": False,
-            "error": str(e),
-            "message": f"Video Producer encountered an error: {str(e)}. Please ensure an image has been selected."
+            "state": build_state_response(
+                phase="error",
+                valid_actions=["generate_social_video", "update_project_brief"],
+                user_prompt="Video team hit a snag. Want to try again?",
+                context={"error": str(e)}
+            )
         })
 
 
@@ -1577,8 +1820,12 @@ async def generate_audio_assets(
 
         tool_result = {
             "success": True,
-            "message": "Audio Team has created audio assets",
-            "result": result
+            "result": result,
+            "state": build_state_response(
+                phase="audio_ready",
+                valid_actions=["generate_social_video", "generate_landing_page"],
+                user_prompt="Audio assets are ready! Want to create a video or landing page?"
+            )
         }
 
         # Validate before returning to prevent WebSocket 1007 errors
@@ -1589,8 +1836,12 @@ async def generate_audio_assets(
         await send_agent_status("audio_team", "error", "")
         return validate_tool_result({
             "success": False,
-            "error": str(e),
-            "message": f"Audio Team encountered an error: {str(e)}"
+            "state": build_state_response(
+                phase="error",
+                valid_actions=["generate_audio_assets"],
+                user_prompt="Audio team hit a snag. Want to try again?",
+                context={"error": str(e)}
+            )
         })
 
 
@@ -1655,13 +1906,15 @@ async def generate_landing_page(
 
         # Validate prerequisites
         if not image_url or image_url == "":
-            error_msg = "PREREQUISITE MISSING: User has not selected a hero image yet. You MUST ask the user which of the 4 hero images they would like to use before you can generate a landing page. Do NOT tell the user you've triggered the web dev agent - instead ask them to select an image first."
-            logger.warning(f"[TOOL] {error_msg}")
+            logger.warning(f"[TOOL] No image selected for landing page generation")
             await send_agent_status("web_dev", "error", "")
             return validate_tool_result({
                 "success": False,
-                "error": "missing_prerequisite",
-                "message": error_msg
+                "state": build_state_response(
+                    phase="need_image_selection",
+                    valid_actions=["update_project_brief"],
+                    user_prompt="Which hero image should we use for the landing page - one, two, three, or four?"
+                )
             })
 
         task = {
@@ -1705,8 +1958,12 @@ async def generate_landing_page(
 
         tool_result = {
             "success": True,
-            "message": "Web Dev Agent has created the landing page",
-            "result": result
+            "result": result,
+            "state": build_state_response(
+                phase="landing_page_ready",
+                valid_actions=["generate_social_video", "generate_audio_assets"],
+                user_prompt="Landing page is ready! Want to create video or audio assets?"
+            )
         }
 
         # Validate before returning to prevent WebSocket 1007 errors
@@ -1717,8 +1974,12 @@ async def generate_landing_page(
         await send_agent_status("web_dev", "error", "")
         return validate_tool_result({
             "success": False,
-            "error": str(e),
-            "message": f"Web Dev Agent encountered an error: {str(e)}. Please ensure an image has been selected."
+            "state": build_state_response(
+                phase="error",
+                valid_actions=["generate_landing_page"],
+                user_prompt="Web team hit a snag. Want to try again?",
+                context={"error": str(e)}
+            )
         })
 
 
@@ -1898,10 +2159,14 @@ async def refine_hero_image(
 
         return validate_tool_result({
             "success": True,
-            "message": f"Image {variation_number} refined successfully (version {refined_image.refinement_iteration})",
             "version_number": refined_image.refinement_iteration,
             "feedback_applied": feedback,
-            "quality_score": refined_image.generation_params.get("score", 0.0),
+            "state": build_state_response(
+                phase="image_refined",
+                valid_actions=["update_project_brief", "refine_hero_image", "select_image_version"],
+                user_prompt=f"Image {variation_number} refined to version {refined_image.refinement_iteration}. Like this better, or want more changes?",
+                context={"variation": variation_number, "version": refined_image.refinement_iteration}
+            )
         })
 
     except Exception as e:
@@ -1909,8 +2174,12 @@ async def refine_hero_image(
         await send_agent_status("art_director", "error", "")
         return validate_tool_result({
             "success": False,
-            "error": str(e),
-            "message": f"Art Director encountered an error while refining: {str(e)}"
+            "state": build_state_response(
+                phase="error",
+                valid_actions=["refine_hero_image", "generate_hero_images"],
+                user_prompt="Refinement hit a snag. Want to try again?",
+                context={"error": str(e)}
+            )
         })
 
 
@@ -2054,9 +2323,13 @@ async def refine_all_hero_images(
 
         return validate_tool_result({
             "success": True,
-            "message": f"All {len(refined_images)} images refined successfully",
             "feedback_applied": feedback,
-            "average_quality_score": avg_score,
+            "state": build_state_response(
+                phase="all_images_refined",
+                valid_actions=["update_project_brief", "refine_hero_image", "refine_all_hero_images"],
+                user_prompt="All images refined. Which one do you want to use - one, two, three, or four?",
+                context={"image_count": len(refined_images)}
+            )
         })
 
     except Exception as e:
@@ -2064,8 +2337,12 @@ async def refine_all_hero_images(
         await send_agent_status("art_director", "error", "")
         return validate_tool_result({
             "success": False,
-            "error": str(e),
-            "message": f"Art Director encountered an error while refining: {str(e)}"
+            "state": build_state_response(
+                phase="error",
+                valid_actions=["refine_all_hero_images", "generate_hero_images"],
+                user_prompt="Batch refinement hit a snag. Want to try again?",
+                context={"error": str(e)}
+            )
         })
 
 
@@ -2103,14 +2380,23 @@ async def select_image_version(
         if not brief:
             return validate_tool_result({
                 "success": False,
-                "error": "Project brief not found."
+                "state": build_state_response(
+                    phase="error",
+                    valid_actions=["generate_hero_images"],
+                    user_prompt="Project not found. Let's generate some hero images first."
+                )
             })
 
         # Validate variation number
         if variation_number < 1 or variation_number > 4 or len(brief.hero_images) < variation_number:
             return validate_tool_result({
                 "success": False,
-                "error": f"Invalid variation number: {variation_number}"
+                "state": build_state_response(
+                    phase="hero_images_displayed",
+                    valid_actions=["select_image_version", "update_project_brief"],
+                    user_prompt=f"I have 4 image variations. Which one would you like to roll back?",
+                    context={"invalid_variation": variation_number}
+                )
             })
 
         # Get current image
@@ -2144,7 +2430,12 @@ async def select_image_version(
         if not target_version:
             return validate_tool_result({
                 "success": False,
-                "error": f"Version {version_number} not found for variation {variation_number}"
+                "state": build_state_response(
+                    phase="hero_images_displayed",
+                    valid_actions=["select_image_version", "refine_hero_image"],
+                    user_prompt=f"Version {version_number} doesn't exist for that image. Which version would you like?",
+                    context={"variation": variation_number, "requested_version": version_number}
+                )
             })
 
         # Update current image in Redis
@@ -2190,17 +2481,26 @@ async def select_image_version(
 
         return validate_tool_result({
             "success": True,
-            "message": f"Restored version {version_number} of image {variation_number}",
             "version_number": version_number,
             "description": target_version.description,
+            "state": build_state_response(
+                phase="version_restored",
+                valid_actions=["update_project_brief", "refine_hero_image", "select_image_version"],
+                user_prompt=f"Restored version {version_number} of image {variation_number}. Like this better?",
+                context={"variation": variation_number, "version": version_number}
+            )
         })
 
     except Exception as e:
         logger.error(f"[TOOL] select_image_version failed: {e}", exc_info=True)
         return validate_tool_result({
             "success": False,
-            "error": str(e),
-            "message": f"Failed to select version: {str(e)}"
+            "state": build_state_response(
+                phase="error",
+                valid_actions=["select_image_version", "refine_hero_image"],
+                user_prompt="Couldn't restore that version. Want to try again?",
+                context={"error": str(e)}
+            )
         })
 
 
@@ -2208,243 +2508,71 @@ async def select_image_version(
 # ADK AGENT & RUNNER SETUP
 # ============================================================================
 
-def create_system_prompt(project_id: str) -> str:
-    """Create the Executive Producer system prompt (optimized for voice streaming)."""
-    return f"""
-# IDENTITY
-You're the Executive Producer of AI Agency Hub. Guide clients via conversational voice from product vision to campaign assets. Audio-first interface—brief, warm, descriptive.
+# System prompt template with {project_id} placeholder
+# This is kept as a raw string so the placeholder is preserved for editing
+#
+# STATE MACHINE ARCHITECTURE:
+# Every tool returns a `state` object with:
+#   - phase: Current workflow phase
+#   - valid_actions: List of tools that can be called next
+#   - user_prompt: Suggested response to user
+#   - context: Additional data
+#
+# This data-driven approach replaces verbose prompt rules. Gemini follows
+# the state machine instead of memorizing workflow rules.
+SYSTEM_PROMPT_TEMPLATE = """
+# EXECUTIVE PRODUCER - AI AGENCY HUB
+Voice-first creative director. Project: `{project_id}`
 
-# 🚨 CRITICAL RULES
+## CRITICAL RULE: EXECUTE TOOLS IMMEDIATELY
 
-**DO**: ✅ Call `update_project_brief` BEFORE responding when user shares product info | ✅ Batch all info into ONE function call per message | ✅ Use exact tool returns—never hallucinate | ✅ Wait for tool results before presenting options | ✅ Announce which team is working BEFORE calling agent tools
+When a tool result contains `state.context.auto_action`, you MUST execute that action IMMEDIATELY without waiting for user input.
 
-**DON'T**: ❌ Call `generate_social_video`/`generate_landing_page` without selected image | ❌ Present options before tool returns | ❌ Use technical function names in speech | ❌ Skip prerequisites
+When user asks to generate/create something, CALL the tool function. Never just talk about it.
 
-# MULTIMODAL INTERACTION (Camera & Screen Share)
-You have access to the user's camera feed (Smart Mirror) AND screen share. Both work identically for visual references.
+## STATE-DRIVEN WORKFLOW
 
-**When user shows you something via camera OR shares their screen:**
-1. **Acknowledge it visually**: "I see you're holding a sketch..." or "I can see the design on your screen..."
-2. **Capture it**: Call `capture_visual_reference(description="...", category="...")` to temporarily save the frame.
-   - For camera: "User's hand-drawn sketch", category="sketch"
-   - For screen: "Design mockup from screen", category="screen"
-3. **Generate Concepts**: Call `generate_concept_sketches(instruction="...")` to create 3 concept variations. The captured reference is used automatically.
-4. **Iterate**: User can ask for changes ("make them more colorful") → call `generate_concept_sketches(instruction="more colorful")` again.
-5. **Select**: When user chooses one ("I like the first one") → call `select_concept(concept_id="first")` to save it to the project brief.
-6. **Proceed**: Now the selected concept is in brief.reference_images and can be used for hero image generation.
+Every tool returns a `state` object:
+- `state.valid_actions` → Tools you can call next
+- `state.user_prompt` → What to say to user
+- `state.context.auto_action` → If present, execute this tool IMMEDIATELY
 
-**Screen Share specific use cases:**
-- User shares a design tool (Figma, Photoshop) → capture the design as reference
-- User shares a competitor's website → capture for style inspiration
-- User shares a mood board or Pinterest → capture visual direction
+## CO-DESIGN FLOW (user shows visual)
 
-# WORKFLOW
-**Stage 1: Discovery** → Ask about product → Call `update_project_brief` for each detail (name, category, target_market, theme, brand_tone, key_features) → When complete, offer strategy
+1. User shows sketch/screen → `capture_visual_reference(description, category)`
+2. Tool returns with `auto_action` → IMMEDIATELY call `generate_concept_sketches`
+3. Concepts displayed → User picks 1/2/3 → `select_concept(concept_id="N")`
 
-**Stage 2: Strategy** → Call `create_campaign_strategy` → Present 3 slogans (exact text from tool) → User selects → Call `update_project_brief(selected_slogan="...")`
+## CAMPAIGN FLOW (user describes product)
 
-**Stage 3: Images** → Call `generate_hero_images` (needs slogan) → Art Director generates 4 complete variations (will auto-retry failed ones) → Present 4 images (exact descriptions) → User selects (e.g., "fourth one") → Call `update_project_brief(selected_image_variation=4)`
+1. Gather info → `update_project_brief(name, category, theme...)`
+2. Create slogans → `create_campaign_strategy`
+3. User picks slogan → `update_project_brief(selected_slogan="...")`
+4. Generate images → `generate_hero_images`
+5. User picks image → `update_project_brief(selected_image_variation=N)`
+6. Create assets → `generate_social_video` / `generate_audio_assets` / `generate_landing_page`
 
-**Stage 3b: Image Refinement (Optional)** → After presenting images, user may refine:
-- Single: "Option 1 needs more color" → `refine_hero_image(1, "add more vibrant colors")`
-- Batch: "All too dark" → `refine_all_hero_images("increase brightness")`
-- Creates new version (v2, v3, etc.) → Present refined images
-- User can compare versions → Continue refining or select final
-- Max 5 iterations per image → Suggest starting fresh if limit reached
+## SELECTION MAPPING
 
-**Stage 4: Assets** → video (`generate_social_video`, needs image) | audio (`generate_audio_assets`, needs slogan) | page (`generate_landing_page`, needs image)
+- User picks concept (1/2/3) → `select_concept(concept_id="N")`
+- User picks hero image (1/2/3/4) → `update_project_brief(selected_image_variation=N)`
+- User picks slogan → `update_project_brief(selected_slogan="<exact slogan text>")`
 
-**Rejections**: Ask "What's not clicking—tone, concept, wording?" → Regenerate → Don't proceed until selection.
+## STYLE
 
-# FUNCTION MAP
-- User mentions product → `update_project_brief(product_name, product_category, theme, brand_tone, target_market, key_features)`
-- User selects slogan → `update_project_brief(selected_slogan="exact text")`
-- User selects image → `update_project_brief(selected_image_variation=1-4)`
-- User requests strategy → `create_campaign_strategy`
-- User requests images → `generate_hero_images` (needs slogan ✓)
-- User requests video → `generate_social_video` (needs image ✓)
-- User requests audio → `generate_audio_assets` (needs slogan ✓)
-- User requests page → `generate_landing_page` (needs image ✓)
-- User references past → `load_memory(query="...")`
-
-**Visual Input (Camera OR Screen Share):**
-- User shows visual via camera → `capture_visual_reference(description, category="sketch/product/other")` to capture frame
-- User shares screen with design → `capture_visual_reference(description, category="screen")` to capture frame
-- Generate concepts → `generate_concept_sketches(instruction)` (uses captured frame automatically)
-- User wants changes → `generate_concept_sketches(instruction="new direction")` to iterate
-- User selects concept → `select_concept(concept_id="first/second/third")` to save to brief
-
-# 🎨 IMAGE REFINEMENT
-- User refines single image → `refine_hero_image(variation_number, feedback)`
-  Patterns: "option N is nice, but [feedback]" | "make option N [changes]" | "option N needs [changes]"
-  Examples: "Option 1 is great, but add modern elements" → `refine_hero_image(1, "add modern elements")`
-- User refines all images → `refine_all_hero_images(feedback)`
-  Patterns: "all images [change]" | "make them all [change]"
-  Examples: "All images feel too dark" → `refine_all_hero_images("increase brightness")`
-- User selects version → `select_image_version(variation_number, version_number)`
-  Patterns: "go back to version N" | "use version N of option X"
-  Examples: "Go back to version 2 of option 1" → `select_image_version(1, 2)`
-
-# VOICE & TONE
-**Style**: Warm partner, not robot. Concise (audio = brevity). Visually descriptive. Balanced critique (strength + consideration per option).
-
-**Audio**: Say "option one" not "#1". Confirm selections ("Going with two—great!"). Natural pauses. Stay in character—decline off-topic.
-
-**Critique Example**: "Option 1 is bold, tech-forward. Option 2 is catchy, playful, might skew younger. Option 3 emphasizes precision."
-
-**Refinements**: Acknowledge what user likes ("Great, you like the composition..."), confirm change ("...let me add those modern elements"). After refinement: describe what changed while preserving what they liked ("I've added holographic UI overlays while keeping that dramatic lighting you loved"). Offer comparison: "Want to see before and after?"
-
-# TEAM ANNOUNCEMENTS (CRITICAL!)
-Always verbally announce which team is working BEFORE calling agent tools. Use natural language, not technical names:
-
-**Agent Tool → Natural Announcement**
-- `create_campaign_strategy` → "Let me get our Strategy team working on this..." OR "I'll bring in our strategists..."
-- `generate_hero_images` → "Let me bring in our Art Director for hero images..." OR "I'll have our Art Director create those visuals..."
-- `refine_hero_image` → "I'll have them refine that..." OR "Let me ask the Art Director to adjust that..."
-- `refine_all_hero_images` → "I'll have them update all four variations..." OR "Let me ask the Art Director to refine these..."
-- `generate_social_video` → "I'll bring in our Video Producer..." OR "Let me get the video team on this..."
-- `generate_audio_assets` → "I'll bring in our Audio team..." OR "Let me get our composers working on this..."
-- `generate_landing_page` → "I'll have our Web Dev team build that..." OR "Let me bring in our developers..."
-- `capture_visual_reference` → "I see that. Let me capture this frame..."
-- `generate_concept_sketches` → "I'll have our Art Director sketch up some concepts based on that..."
-- `select_concept` → "Great choice! I'll save that to your project..."
-
-**Purpose**: This sets expectations that work is happening and provides transparency into the creative process.
-
-# MEMORY
-**PreloadMemoryTool** (auto): Memories load at start. Use: "Last time for AuraAI, you preferred minimalist..."
-
-**load_memory** (manual): Call when user asks about past ("What slogan before?" → `load_memory(query="previous slogans")`) or references project ("Like sneaker campaign" → `load_memory(query="sneaker campaign")`).
-
-Don't hallucinate. If no results: "No notes from that—want to tell me more?"
-
-# ERROR HANDLING
-**Tool fails**: Brief apology + non-tech explain + retry offer. Example: Tool error → "Art Director needs a moment—renders take time. Try again?"
-
-**Rejections**: Ask specifics → Offer regen → Block progression until selection.
-
-# EXAMPLE
-User: "Aura smart sneaker for urban athletes. Futuristic."
-You: *[Call `update_project_brief(product_name="Aura", product_category="smart sneaker", target_market="urban athletes", theme="futuristic")`]* "Great! What's special?"
-
-User: "Glowing sole, tracks runs."
-You: *[Call `update_project_brief(key_features=["glowing sole", "run tracking"])`]* "Perfect. Ready for slogans?"
-
-User: "Yes."
-You: "Let me get our Strategy team working on this..." *[Call `create_campaign_strategy`]* *[Returns: ["Step Into Your Aura", "Glow with the Flow", "The Future at Your Feet"]]* "They've created three options: One, 'Step Into Your Aura'—empowering. Two, 'Glow with the Flow'—catchy, playful. Three, 'The Future at Your Feet'—bold, tech. Thoughts?"
-
-User: "One."
-You: *[Call `update_project_brief(selected_slogan="Step Into Your Aura")`]* "Excellent choice! Let me bring in our Art Director for hero images..." *[Call `generate_hero_images`]* *[Returns: 4 images]* "Here are four variations they've created..."
-
-User: "I like the first one but add modern elements."
-You: "Great, I'll have them refine that with modern elements..." *[Call `refine_hero_image(1, "add modern elements")`]* *[Returns: refined image]* "There we go—added holographic UI overlays while keeping that dramatic lighting you loved. Better?"
-
-# CAMERA EXAMPLE (Smart Mirror)
-User: *[Shows sketch on camera]* "Here's my rough sketch for the sneaker design."
-You: "I see your sketch—looks like a sleek silhouette with some interesting details. Let me capture this..." *[Call `capture_visual_reference(description="Hand-drawn sneaker sketch with angular design", category="sketch")`]* "Got it! Want me to have our Art Director create some concept variations based on this?"
-
-User: "Yes, make them futuristic."
-You: "I'll have our Art Director sketch up some concepts..." *[Call `generate_concept_sketches(instruction="futuristic interpretation of the sketch")`]* *[Returns: 3 concepts]* "Here are three concept variations: One has a sleek cyber aesthetic, two goes more holographic, three emphasizes the angular lines from your sketch. Which direction speaks to you?"
-
-User: "I like the second one but less holographic."
-You: "Let me have them iterate on that..." *[Call `generate_concept_sketches(instruction="like concept 2 but dial back the holographic elements")`]* *[Returns: 3 new concepts]* "Here's a refined set—cleaner, less holographic but still futuristic. Better?"
-
-User: "Yes, the first one is perfect."
-You: "Great choice! I'll save that to your project..." *[Call `select_concept(concept_id="first")`]* "Done! This concept is now saved as your reference. Ready to generate the full hero images based on this direction?"
-
-# SCREEN SHARE EXAMPLE
-User: *[Shares screen showing Figma design]* "I'm sharing my Figma mockup. Can you see it?"
-You: "Yes, I can see your Figma design—nice clean lines and that gradient on the product looks great. Let me capture this..." *[Call `capture_visual_reference(description="Figma product mockup with gradient styling and clean typography", category="screen")`]* "Got it! Want me to create some concept variations based on this design direction?"
-
-User: "Yes, but make it more premium looking."
-You: "I'll have our Art Director sketch up some premium concepts..." *[Call `generate_concept_sketches(instruction="premium luxury interpretation of the design")`]* *[Returns: 3 concepts]* "Here are three premium variations: One adds metallic accents, two goes for dark elegance, three uses subtle textures. Which feels right?"
-
-User: "The third one."
-You: "Great choice! I'll save that to your project..." *[Call `select_concept(concept_id="third")`]* "Done! This concept is now your reference image. Ready to proceed to hero images?"
-
-# CURRENT PROJECT
-Project: `{project_id}` | First message: Warmly greet, ask product vision.
+- Say "option one" not "#1"
+- Be brief and action-oriented
 """
 
 
-# ============================================================================
-# DEPRECATED: Global agent and runner (kept for backwards compatibility)
-# ============================================================================
-# NOTE: These globals are no longer used. Each GeminiLiveADKConnection now
-# creates its own agent and runner with user-selected model and voice.
-# The per-connection architecture allows multiple users with different
-# settings to connect simultaneously without conflicts.
+def get_system_prompt_template() -> str:
+    """Get the Executive Producer system prompt template with {project_id} placeholder intact."""
+    return SYSTEM_PROMPT_TEMPLATE
 
-# Create the Executive Producer agent with all tools
-# DEPRECATED & COMMENTED OUT TO FIX STARTUP CRASH
-# The following global initialization causes Pydantic validation errors because
-# required fields (like 'instruction') are missing. Since this code is unused
-# (replaced by per-connection initialization), it is safe to disable.
 
-# agent_kwargs = {
-#     "name": "executive_producer",
-#     "model": "gemini-live-2.5-flash", #"gemini-live-2.5-flash-preview-native-audio-09-2025",  # Vertex AI native audio model
-#     "description": "Executive Producer for AI Agency Hub - coordinates creative campaign development",
-#     "instruction": "",  # Will be set dynamically per session
-#     "tools": [
-#         # Campaign management tools
-#         update_project_brief,
-#         create_campaign_strategy,
-#         generate_hero_images,
-#         # Image refinement tools (NEW)
-#         refine_hero_image,
-#         refine_all_hero_images,
-#         select_image_version,
-#         # Video/audio/web tools
-#         generate_social_video,
-#         generate_audio_assets,
-#         generate_landing_page,
-#         # Memory Bank tools (enabled via feature flag)
-#         PreloadMemoryTool() if settings.enable_memory_bank else None,
-#         load_memory if settings.enable_memory_bank else None,
-#     ],
-# }
-
-# NOTE: after_agent_callback is NOT registered because it doesn't trigger in run_live() mode
-# Memory Bank persistence is handled manually on turn_complete events instead
-# See _agent_to_client_messaging() method for manual persistence logic
-
-# executive_producer_agent = Agent(**agent_kwargs)
-
-# Remove None values from tools list (when Memory Bank is disabled)
-# executive_producer_agent.tools = [t for t in executive_producer_agent.tools if t is not None]
-
-# Fix ADK app name mismatch warning by explicitly setting the agent file path
-# This overrides the automatic detection that infers app name from package path
-# executive_producer_agent._file = "app/services/gemini_live_adk.py"
-
-# Create session service and runner (reuse across connections)
-# session_service = InMemorySessionService()
-
-# Configure runner with Memory Bank support
-# runner_kwargs = {
-#     "app_name": "ai_agency_hub",
-#     "agent": executive_producer_agent,
-#     "session_service": session_service,
-# }
-
-# Add Memory Bank service if enabled
-# if settings.enable_memory_bank:
-#     # Initialize memory service before passing to runner
-#     memory_service.initialize()
-#     if memory_service._service:
-#         # Pass the underlying VertexAiMemoryBankService to runner
-#         runner_kwargs["memory_service"] = memory_service._service
-#         logger.info("✓ Memory Bank service registered with runner")
-#     else:
-#         logger.warning("⚠ Memory Bank service failed to initialize, running without memory")
-
-# runner = Runner(**runner_kwargs)
-
-# Count tools for logging
-# tool_count = len(executive_producer_agent.tools)
-# memory_status = "with Memory Bank (turn_complete persistence)" if settings.enable_memory_bank else "without Memory Bank"
-# logger.info(f"✓ ADK Executive Producer agent created with {tool_count} tools ({memory_status})")
+def create_system_prompt(project_id: str) -> str:
+    """Create the Executive Producer system prompt with project_id substituted."""
+    return SYSTEM_PROMPT_TEMPLATE.replace("{project_id}", project_id)
 
 
 # ============================================================================
@@ -2481,9 +2609,16 @@ class GeminiLiveADKConnection:
 
         # Storage for pending creative summaries (injected at turn_complete)
         self.pending_creative_summaries: List[str] = []
-        
+
         # Storage for last video frame (for capture_visual_reference tool)
         self.last_video_frame: Optional[str] = None
+
+        # Storage for pending concepts (set by generate_concept_sketches, read by select_concept)
+        self.pending_concepts: List[Dict[str, Any]] = []
+        self.concept_iteration: int = 0
+
+        # Storage for captured reference (set by capture_visual_reference)
+        self.captured_reference: Optional[Dict[str, Any]] = None
 
         # Set context for tools (so they know which project to use)
         for tool in [update_project_brief, capture_visual_reference, generate_concept_sketches,
@@ -2655,7 +2790,15 @@ class GeminiLiveADKConnection:
         self.session = session
 
         # Update agent instruction with project-specific system prompt
-        self.agent.instruction = create_system_prompt(self.project_id)
+        # Check for custom prompt in Redis first
+        custom_prompt = await redis_client.client.get("config:system_prompt")
+        if custom_prompt:
+            # Replace project_id placeholder if present
+            self.agent.instruction = custom_prompt.replace("{project_id}", self.project_id)
+            logger.info(f"[ADK] Using custom system prompt ({len(custom_prompt)} chars)")
+        else:
+            self.agent.instruction = create_system_prompt(self.project_id)
+            logger.info(f"[ADK] Using default system prompt")
 
         # Create live request queue
         self.live_request_queue = LiveRequestQueue()
@@ -2851,13 +2994,6 @@ class GeminiLiveADKConnection:
                             frame_data = f"data:image/jpeg;base64,{frame_data}"
                         self.last_video_frame = frame_data
 
-                        # DEBUG: Log every 10th frame to confirm storage is working
-                        if not hasattr(self, '_screen_frame_count'):
-                            self._screen_frame_count = 0
-                        self._screen_frame_count += 1
-                        if self._screen_frame_count % 10 == 1:
-                            logger.info(f"[ADK] 🖥️ Screen frame #{self._screen_frame_count} stored, size: {len(frame_data)} chars, starts with: {frame_data[:30] if frame_data else 'None'}")
-                        
                         # Extract base64 data (handle data URIs)
                         if frame_data.startswith("data:"):
                             header, base64_data = frame_data.split(",", 1)
@@ -3016,6 +3152,122 @@ class GeminiLiveADKConnection:
                                 }))
                             except:
                                 pass
+
+                # Handle DIRECT concept selection from UI click (bypasses Gemini)
+                elif message.get("type") == "select_concept" and message.get("data"):
+                    data = message["data"]
+                    concept_index = data.get("concept_index")  # 1-based index
+                    logger.info(f"[ADK] 🎯 Direct concept selection via UI click: concept #{concept_index}")
+                    logger.info(f"[ADK] Self (connection) object id: {id(self)}")
+
+                    try:
+                        # Get pending concepts - try Redis first (most reliable)
+                        pending_concepts = []
+                        redis_concepts = await redis_client.client.get(f"pending_concepts:{self.project_id}")
+                        if redis_concepts:
+                            pending_concepts = json.loads(redis_concepts)
+                            logger.info(f"[ADK] Found {len(pending_concepts)} pending concepts in Redis")
+                        else:
+                            # Fallback to connection object
+                            pending_concepts = getattr(self, 'pending_concepts', [])
+                            logger.info(f"[ADK] Redis empty, found {len(pending_concepts)} pending concepts on self")
+
+                        if not pending_concepts:
+                            logger.error("[ADK] No pending concepts available for selection")
+                            await self.frontend_ws.send_text(json.dumps({
+                                "type": "error",
+                                "data": {
+                                    "message": "No concepts available to select",
+                                    "error": "Please generate concepts first"
+                                }
+                            }))
+                            continue
+
+                        # Validate index
+                        if concept_index < 1 or concept_index > len(pending_concepts):
+                            logger.error(f"[ADK] Invalid concept index: {concept_index}")
+                            continue
+
+                        # Get the selected concept
+                        selected = pending_concepts[concept_index - 1]
+                        logger.info(f"[ADK] Selected concept: id={selected.get('id')}, url_len={len(selected.get('url', ''))}")
+
+                        # Get project brief
+                        brief = await redis_client.get_project_brief(self.project_id)
+                        if not brief:
+                            logger.error(f"[ADK] Project brief not found for {self.project_id}")
+                            continue
+
+                        # Create ImageAsset and save to brief.reference_images
+                        from app.models.assets import ImageAsset
+                        asset = ImageAsset(
+                            asset_id=selected.get("id", f"concept_{concept_index}"),
+                            url=selected.get("url", ""),
+                            description=selected.get("description", "Selected concept"),
+                            generation_params={
+                                "category": "selected_concept",
+                                "timestamp": time.time(),
+                                "iteration": getattr(self, 'concept_iteration', 1),
+                            }
+                        )
+
+                        # Update brief with new reference image
+                        # Replace any existing "selected_concept" images (user changed their mind)
+                        current_reference_images = brief.reference_images or []
+                        # Filter out previous concept selections, keep other references
+                        current_reference_images = [
+                            img for img in current_reference_images
+                            if img.generation_params.get("category") != "selected_concept"
+                        ]
+                        current_reference_images.append(asset)
+
+                        updated_brief = await redis_client.update_project_brief(self.project_id, {
+                            "reference_images": current_reference_images
+                        })
+
+                        logger.info(f"[ADK] ✓ Saved concept to brief. reference_images count: {len(updated_brief.reference_images)}")
+
+                        # DON'T clear pending concepts - allow user to change selection
+                        # Concepts will be cleared when Smart Mirror closes or new concepts are generated
+                        # self.pending_concepts = []
+                        # self.concept_iteration = 0
+
+                        # Broadcast concept_selected to frontend
+                        await self.frontend_ws.send_text(json.dumps({
+                            "type": "concept_selected",
+                            "data": {"concept_id": selected.get("id")}
+                        }))
+
+                        # Broadcast brief_update to frontend
+                        await self.frontend_ws.send_text(json.dumps({
+                            "type": "brief_update",
+                            "data": {
+                                "brief": updated_brief.model_dump(mode="json"),
+                                "changed_fields": ["reference_images"]
+                            }
+                        }))
+
+                        logger.info(f"[ADK] ✓ Broadcasted concept_selected and brief_update to frontend")
+
+                        # Also send text to Gemini so it knows what happened
+                        content = types.Content(
+                            role="user",
+                            parts=[types.Part.from_text(text=f"I selected concept {concept_index}. It has been saved to the project brief.")]
+                        )
+                        self.live_request_queue.send_content(content=content)
+
+                    except Exception as e:
+                        logger.error(f"[ADK] ✗ Failed to select concept: {e}", exc_info=True)
+                        try:
+                            await self.frontend_ws.send_text(json.dumps({
+                                "type": "error",
+                                "data": {
+                                    "message": "Failed to select concept",
+                                    "error": str(e)
+                                }
+                            }))
+                        except:
+                            pass
 
             except Exception as e:
                 # Check if this is a normal disconnect (code 1005 = NO_STATUS_RCVD means client closed connection normally)

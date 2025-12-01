@@ -100,14 +100,6 @@ def validate_services() -> Dict[str, bool]:
         print(f"❌ Event Bus: {e}")
 
     try:
-        from app.services.brief_sync import brief_sync_manager
-        results["Brief Sync"] = True
-        print(f"✅ Brief Sync: {type(brief_sync_manager).__name__}")
-    except Exception as e:
-        results["Brief Sync"] = False
-        print(f"❌ Brief Sync: {e}")
-
-    try:
         from app.services.redis_client import redis_client
         results["Redis Client"] = True
         print(f"✅ Redis Client: {type(redis_client).__name__}")
@@ -123,36 +115,20 @@ def validate_producer() -> Dict[str, bool]:
     results = {}
 
     try:
-        from app.producer.executive_producer import ExecutiveProducer
-        results["Executive Producer"] = True
-        print(f"✅ Executive Producer: {ExecutiveProducer.__name__}")
-    except Exception as e:
-        results["Executive Producer"] = False
-        print(f"❌ Executive Producer: {e}")
-
-    try:
-        from app.producer.demo_flow import AuraDemoFlow
-        results["Demo Flow"] = True
-        print(f"✅ Demo Flow: {AuraDemoFlow.__name__}")
-    except Exception as e:
-        results["Demo Flow"] = False
-        print(f"❌ Demo Flow: {e}")
-
-    try:
-        from app.producer.planner import CampaignPlanner
-        results["Planner"] = True
-        print(f"✅ Planner: {CampaignPlanner.__name__}")
-    except Exception as e:
-        results["Planner"] = False
-        print(f"❌ Planner: {e}")
-
-    try:
         from app.producer.critique import CritiqueSystem
         results["Critique System"] = True
         print(f"✅ Critique System: {CritiqueSystem.__name__}")
     except Exception as e:
         results["Critique System"] = False
         print(f"❌ Critique System: {e}")
+
+    try:
+        from app.services.gemini_live_adk import GeminiLiveADKConnection
+        results["Gemini Live ADK"] = True
+        print(f"✅ Gemini Live ADK: {GeminiLiveADKConnection.__name__}")
+    except Exception as e:
+        results["Gemini Live ADK"] = False
+        print(f"❌ Gemini Live ADK: {e}")
 
     return results
 

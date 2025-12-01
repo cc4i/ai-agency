@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.routers.agents import router as agents_router
+from app.routers.admin import router as admin_router
 from app.services.redis_client import redis_client
 
 # Configure logging - both console and file
@@ -99,6 +100,7 @@ app.add_middleware(
 
 # Include API routers
 app.include_router(agents_router)
+app.include_router(admin_router)
 
 
 @app.get("/")

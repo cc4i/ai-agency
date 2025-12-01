@@ -11,6 +11,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Sparkles, Info, ChevronDown } from 'lucide-react';
 import { API_BASE_URL } from '@/config';
+import { SystemPromptEditor } from './SystemPromptEditor';
 
 interface ModelOption {
   name: string;
@@ -229,6 +230,12 @@ export function ConfigurationScreen({ onStart }: ConfigurationScreenProps) {
               </p>
             )}
           </div>
+
+          {/* Divider */}
+          <div className="border-t border-zinc-800" />
+
+          {/* System Prompt Editor - Collapsible Advanced Section */}
+          <SystemPromptEditor />
         </div>
 
         {/* Start Button */}
