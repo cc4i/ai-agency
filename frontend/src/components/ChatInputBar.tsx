@@ -13,6 +13,7 @@
 import { useState, useRef } from 'react';
 import { Paperclip, Mic, MicOff, Camera, Monitor } from 'lucide-react';
 import { useProjectStore } from '@/stores/useProjectStore';
+import { VoiceWaveform } from './VoiceWaveform';
 
 interface ChatInputBarProps {
   onSendText: (text: string) => void;
@@ -35,7 +36,7 @@ export function ChatInputBar({
   isCameraActive,
   isScreenShareActive,
 }: ChatInputBarProps) {
-  const { audioLevel } = useProjectStore();
+  const { audioLevel, userFrequencyData, aiFrequencyData, isProducerSpeaking } = useProjectStore();
   const [message, setMessage] = useState('');
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -142,34 +143,45 @@ export function ChatInputBar({
           </div>
         </div>
 
-        {/* Mic Button - Right (with audio level feedback) */}
-        <button
-          onClick={onToggleMic}
-          className={`
-            relative p-2 rounded-lg transition-all
-            ${isRecording && audioLevel > 0.1
-              ? 'text-white shadow-lg'
-              : isRecording
-                ? 'bg-blue-500 text-white'
-                : 'hover:bg-zinc-800 text-zinc-400 hover:text-zinc-300'
-            }
-          `}
-          style={
-            isRecording && audioLevel > 0.1
-              ? {
-                backgroundColor: `rgb(59, 130, 246, ${0.5 + audioLevel * 0.5})`,
-                boxShadow: `0 0 ${10 + audioLevel * 20}px rgba(59, 130, 246, ${audioLevel})`,
+        {/* Right: Mic Button + Voice Waveform */}
+        <div className="flex items-center gap-2">
+          {/* Mic Button */}
+          <button
+            onClick={onToggleMic}
+            className={`
+              relative p-2 rounded-lg transition-all flex-shrink-0
+              ${isRecording && audioLevel > 0.1
+                ? 'text-white shadow-lg'
+                : isRecording
+                  ? 'bg-cyan-600 text-white'
+                  : 'hover:bg-zinc-800 text-zinc-400 hover:text-zinc-300'
               }
-              : undefined
-          }
-          title={isRecording ? 'Disable audio input' : 'Enable audio input'}
-        >
-          {isRecording ? (
-            <Mic className="w-5 h-5" />
-          ) : (
-            <MicOff className="w-5 h-5" />
-          )}
-        </button>
+            `}
+            style={
+              isRecording && audioLevel > 0.1
+                ? {
+                  backgroundColor: `rgb(6, 182, 212, ${0.6 + audioLevel * 0.4})`,
+                  boxShadow: `0 0 ${8 + audioLevel * 16}px rgba(34, 211, 238, ${audioLevel * 0.6})`,
+                }
+                : undefined
+            }
+            title={isRecording ? 'Disable audio input' : 'Enable audio input'}
+          >
+            {isRecording ? (
+              <Mic className="w-5 h-5" />
+            ) : (
+              <MicOff className="w-5 h-5" />
+            )}
+          </button>
+
+          {/* Voice Waveform Visualizer */}
+          <VoiceWaveform
+            userFrequencies={userFrequencyData}
+            aiFrequencies={aiFrequencyData}
+            isRecording={isRecording}
+            isAiSpeaking={isProducerSpeaking}
+          />
+        </div>
       </div>
     </div>
   );

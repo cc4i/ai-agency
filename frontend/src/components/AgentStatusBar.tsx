@@ -15,25 +15,25 @@ import { useEffect, useState } from 'react';
 import { useProjectStore } from '@/stores/useProjectStore';
 import { useAgentStore, AgentInfo } from '@/stores/useAgentStore';
 import { cn } from '@/lib/utils';
-import { Loader2, CheckCircle2, XCircle, Circle, Sparkles, Settings, Plus, Cloud, Wifi, WifiOff, AlertTriangle } from 'lucide-react';
+import { Loader2, CheckCircle2, XCircle, Circle, Sparkles, Settings, Plus, Cloud, Wifi, WifiOff, AlertTriangle, Target, Palette, Film, Music, Code, LucideIcon } from 'lucide-react';
+
+// Agent icon components (Lucide icons for consistent styling)
+const AGENT_ICON_COMPONENTS: Record<string, LucideIcon> = {
+  strategy: Target,
+  art_director: Palette,
+  video_producer: Film,
+  audio_team: Music,
+  web_dev: Code,
+};
 
 // Default local agents (fallback if API not available)
 const DEFAULT_AGENTS = [
-  { id: 'strategy', name: 'Strategy', icon: '🎯' },
-  { id: 'art_director', name: 'Art Director', icon: '🎨' },
-  { id: 'video_producer', name: 'Video Producer', icon: '🎬' },
-  { id: 'audio_team', name: 'Audio Team', icon: '🎵' },
-  { id: 'web_dev', name: 'Web Dev', icon: '💻' },
+  { id: 'strategy', name: 'Strategy' },
+  { id: 'art_director', name: 'Art Director' },
+  { id: 'video_producer', name: 'Video Producer' },
+  { id: 'audio_team', name: 'Audio Team' },
+  { id: 'web_dev', name: 'Web Dev' },
 ];
-
-// Map agent IDs to icons
-const AGENT_ICONS: Record<string, string> = {
-  strategy: '🎯',
-  art_director: '🎨',
-  video_producer: '🎬',
-  audio_team: '🎵',
-  web_dev: '💻',
-};
 
 interface AgentStatusBarProps {
   onReconfigure?: () => void;
@@ -58,13 +58,12 @@ export function AgentStatusBar({ onReconfigure, selectedModel, selectedVoice, on
     ? agents.filter(a => a.is_active).map(a => ({
       id: a.agent_id,
       name: a.name,
-      icon: AGENT_ICONS[a.agent_id] || '🤖',
       provider: a.provider,
       status: a.status,
       overrides: a.overrides,
       overridden_by: a.overridden_by,
     }))
-    : DEFAULT_AGENTS.map(a => ({ ...a, provider: 'local' as const, status: 'ready' as const, overrides: undefined }));
+    : DEFAULT_AGENTS.map(a => ({ ...a, provider: 'local' as const, status: 'ready' as const, overrides: undefined, overridden_by: undefined }));
 
   // Count remote agents
   const remoteCount = agents.filter(a => a.provider === 'remote').length;
@@ -97,11 +96,12 @@ export function AgentStatusBar({ onReconfigure, selectedModel, selectedVoice, on
           {displayAgents.map((agent) => {
             const taskStatus = agentStatuses[agent.id];
             const cbState = circuitBreakerStates[agent.id];
+            const IconComponent = AGENT_ICON_COMPONENTS[agent.id];
             return (
               <AgentStatus
                 key={agent.id}
                 name={agent.name}
-                icon={agent.icon}
+                IconComponent={IconComponent}
                 status={taskStatus?.status || 'idle'}
                 currentTask={taskStatus?.current_task}
                 provider={agent.provider}
@@ -164,7 +164,7 @@ export function AgentStatusBar({ onReconfigure, selectedModel, selectedVoice, on
 
 interface AgentStatusProps {
   name: string;
-  icon: string;
+  IconComponent?: LucideIcon;
   status: 'idle' | 'thinking' | 'complete' | 'error';
   currentTask?: string;
   provider?: 'local' | 'remote';
@@ -172,7 +172,7 @@ interface AgentStatusProps {
   overrides?: string;
 }
 
-function AgentStatus({ name, icon, status, currentTask, provider, circuitBreakerState, overrides }: AgentStatusProps) {
+function AgentStatus({ name, IconComponent, status, currentTask, provider, circuitBreakerState, overrides }: AgentStatusProps) {
   const isRemote = provider === 'remote';
   const isCircuitOpen = circuitBreakerState === 'open';
   const isCircuitHalfOpen = circuitBreakerState === 'half_open';
@@ -236,7 +236,15 @@ function AgentStatus({ name, icon, status, currentTask, provider, circuitBreaker
         </div>
       )}
 
-      <span className="text-base">{icon}</span>
+      {/* Agent icon - Lucide component */}
+      {IconComponent ? (
+        <IconComponent className={cn(
+          'w-4 h-4',
+          isActive ? 'text-purple-300' : 'text-zinc-400'
+        )} />
+      ) : (
+        <Circle className="w-4 h-4 text-zinc-500" />
+      )}
       <span className={cn(
         'text-xs font-medium',
         isActive ? 'text-purple-200' : 'text-zinc-400'

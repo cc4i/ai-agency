@@ -112,6 +112,9 @@ interface ProjectState {
   transcript: ConversationMessage[];
   changedFields: string[];
 
+  // Live transcription (real-time display before turn completes)
+  liveTranscript: { role: 'user' | 'assistant'; text: string } | null;
+
   // Concept preview state (for Smart Mirror iteration)
   previewConcepts: ConceptPreview[];
   conceptIteration: number;
@@ -123,6 +126,10 @@ interface ProjectState {
   isProducerSpeaking: boolean;
   audioLevel: number;
 
+  // Frequency data for waveform visualization (16 bars each, 0-1 normalized)
+  userFrequencyData: number[];
+  aiFrequencyData: number[];
+
   // Actions
   setBrief: (brief: ProjectBrief) => void;
   updateBrief: (updates: Partial<ProjectBrief>, changedFields?: string[]) => void;
@@ -130,6 +137,8 @@ interface ProjectState {
   updateAgentStatus: (agentId: string, status: AgentStatus) => void;
   addAnnouncement: (announcement: ProducerAnnouncement) => void;
   addTranscriptMessage: (message: ConversationMessage) => void;
+  setLiveTranscript: (live: { role: 'user' | 'assistant'; text: string } | null) => void;
+  appendLiveTranscript: (role: 'user' | 'assistant', text: string) => void;
   clearChangedFields: () => void;
 
   // Concept preview actions
@@ -142,9 +151,14 @@ interface ProjectState {
   setMicrophoneActive: (active: boolean) => void;
   setProducerSpeaking: (speaking: boolean) => void;
   setAudioLevel: (level: number) => void;
+  setUserFrequencyData: (data: number[]) => void;
+  setAiFrequencyData: (data: number[]) => void;
 
   reset: () => void;
 }
+
+// Default frequency data (16 bars, all zero)
+const DEFAULT_FREQUENCY_DATA = Array(16).fill(0);
 
 const initialState = {
   brief: null,
@@ -153,6 +167,7 @@ const initialState = {
   announcements: [],
   transcript: [],
   changedFields: [],
+  liveTranscript: null as { role: 'user' | 'assistant'; text: string } | null,
   previewConcepts: [] as ConceptPreview[],
   conceptIteration: 0,
   capturedReference: null as CapturedReference | null,
@@ -160,6 +175,8 @@ const initialState = {
   isMicrophoneActive: false,
   isProducerSpeaking: false,
   audioLevel: 0,
+  userFrequencyData: DEFAULT_FREQUENCY_DATA,
+  aiFrequencyData: DEFAULT_FREQUENCY_DATA,
 };
 
 export const useProjectStore = create<ProjectState>((set) => ({
@@ -206,7 +223,21 @@ export const useProjectStore = create<ProjectState>((set) => ({
   addTranscriptMessage: (message) =>
     set((state) => ({
       transcript: [...state.transcript, message],
+      liveTranscript: null, // Clear live transcript when committing
     })),
+
+  setLiveTranscript: (live) => set({ liveTranscript: live }),
+
+  appendLiveTranscript: (role, text) =>
+    set((state) => {
+      if (state.liveTranscript && state.liveTranscript.role === role) {
+        // Same role - append text
+        return { liveTranscript: { role, text: state.liveTranscript.text + text } };
+      } else {
+        // Different role - start fresh
+        return { liveTranscript: { role, text } };
+      }
+    }),
 
   clearChangedFields: () => set({ changedFields: [] }),
 
@@ -230,6 +261,8 @@ export const useProjectStore = create<ProjectState>((set) => ({
   setMicrophoneActive: (active) => set({ isMicrophoneActive: active }),
   setProducerSpeaking: (speaking) => set({ isProducerSpeaking: speaking }),
   setAudioLevel: (level) => set({ audioLevel: level }),
+  setUserFrequencyData: (data) => set({ userFrequencyData: data }),
+  setAiFrequencyData: (data) => set({ aiFrequencyData: data }),
 
   reset: () => set(initialState),
 }));

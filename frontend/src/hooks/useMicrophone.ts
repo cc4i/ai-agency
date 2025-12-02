@@ -38,12 +38,13 @@ export function useMicrophone({
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationFrameRef = useRef<number>();
 
-  const { setMicrophoneActive, setAudioLevel, isProducerSpeaking } = useProjectStore();
+  const { setMicrophoneActive, setAudioLevel, setUserFrequencyData, isProducerSpeaking } = useProjectStore();
 
   const monitorAudioLevel = useCallback(() => {
     if (!analyserRef.current) return;
 
     const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
+    const NUM_BARS = 16; // Number of waveform bars
 
     const update = () => {
       if (!analyserRef.current) return;
@@ -56,11 +57,24 @@ export function useMicrophone({
 
       setAudioLevel(normalized);
 
+      // Downsample frequency data to NUM_BARS for waveform visualization
+      const step = Math.floor(dataArray.length / NUM_BARS);
+      const frequencies: number[] = [];
+      for (let i = 0; i < NUM_BARS; i++) {
+        // Take average of each segment for smoother visualization
+        let sum = 0;
+        for (let j = 0; j < step; j++) {
+          sum += dataArray[i * step + j] || 0;
+        }
+        frequencies.push((sum / step) / 255); // Normalize to 0-1
+      }
+      setUserFrequencyData(frequencies);
+
       animationFrameRef.current = requestAnimationFrame(update);
     };
 
     update();
-  }, [setAudioLevel]);
+  }, [setAudioLevel, setUserFrequencyData]);
 
   const startRecording = useCallback(async () => {
     try {
@@ -166,7 +180,8 @@ export function useMicrophone({
     setIsRecording(false);
     setMicrophoneActive(false);
     setAudioLevel(0);
-  }, [setMicrophoneActive, setAudioLevel]);
+    setUserFrequencyData(Array(16).fill(0)); // Reset waveform
+  }, [setMicrophoneActive, setAudioLevel, setUserFrequencyData]);
 
   const toggleRecording = useCallback(() => {
     if (isRecording) {

@@ -1,9 +1,10 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Camera, Monitor, X, Maximize2, Minimize2, Aperture, RefreshCw, Loader2, GripHorizontal } from 'lucide-react';
+import { Camera, Monitor, X, Maximize2, Minimize2, Aperture, RefreshCw, Loader2, GripHorizontal, ZoomIn } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useProjectStore } from '@/stores/useProjectStore';
+import { ImageExpandModal } from './ImageExpandModal';
 
 interface MultimodalInputProps {
     onFrameCapture: (dataUrl: string, type: 'video_input' | 'screen_input') => void;
@@ -37,6 +38,9 @@ export function MultimodalInput({ onFrameCapture, isActive, mode, onClose, onSel
     const [width, setWidth] = useState(DEFAULT_WIDTH);
     const [isResizing, setIsResizing] = useState(false);
     const resizeStart = useRef({ x: 0, width: 0 });
+
+    // Zoom/expand state for concept images
+    const [expandedImage, setExpandedImage] = useState<{ url: string; description: string } | null>(null);
 
     // Keep onClose ref updated
     useEffect(() => {
@@ -461,12 +465,22 @@ export function MultimodalInput({ onFrameCapture, isActive, mode, onClose, onSel
                 {!isMinimized && capturedReference && (
                     <div className="p-3 bg-zinc-900/95 border-t border-zinc-800">
                         <div className="flex items-center gap-3">
-                            <div className="w-16 h-16 rounded-lg overflow-hidden border border-green-500/50 flex-shrink-0">
+                            <div
+                                className="w-16 h-16 rounded-lg overflow-hidden border border-green-500/50 flex-shrink-0 cursor-pointer hover:border-green-400 transition-colors relative group/ref"
+                                onClick={() => setExpandedImage({
+                                    url: capturedReference.url,
+                                    description: capturedReference.description || 'Captured reference'
+                                })}
+                                title="Click to view full size"
+                            >
                                 <img
                                     src={capturedReference.url}
                                     alt="Captured reference"
                                     className="w-full h-full object-cover"
                                 />
+                                <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/ref:opacity-100 transition-opacity flex items-center justify-center">
+                                    <ZoomIn className="w-4 h-4 text-white" />
+                                </div>
                             </div>
                             <div className="flex-1 min-w-0">
                                 <p className="text-xs font-medium text-green-400">✓ Reference Captured</p>
@@ -492,27 +506,57 @@ export function MultimodalInput({ onFrameCapture, isActive, mode, onClose, onSel
                             {previewConcepts.map((concept, i: number) => (
                                 <div
                                     key={concept.id}
-                                    onClick={() => onSelectConcept?.(i + 1)}
-                                    className="relative aspect-square rounded-xl overflow-hidden border-2 border-zinc-700 hover:border-purple-500 cursor-pointer transition-all hover:scale-[1.02] hover:shadow-lg hover:shadow-purple-500/20 active:scale-95"
-                                    title={`Click to select concept ${i + 1}`}
+                                    className="relative aspect-square rounded-xl overflow-hidden border-2 border-zinc-700 hover:border-purple-500 transition-all hover:scale-[1.02] hover:shadow-lg hover:shadow-purple-500/20 group/concept"
                                 >
                                     <img
                                         src={concept.url}
                                         alt={`Concept ${i + 1}`}
                                         className="w-full h-full object-cover"
                                     />
-                                    <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent text-xs text-white px-2 py-1.5 truncate">
+                                    {/* Hover overlay with zoom and select buttons */}
+                                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/concept:opacity-100 transition-opacity flex items-center justify-center gap-2">
+                                        <button
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                setExpandedImage({
+                                                    url: concept.url,
+                                                    description: concept.description || `Concept ${i + 1}`
+                                                });
+                                            }}
+                                            className="p-2 bg-zinc-800/80 hover:bg-zinc-700 rounded-lg text-white transition-colors"
+                                            title="View full size"
+                                        >
+                                            <ZoomIn className="w-4 h-4" />
+                                        </button>
+                                        <button
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                onSelectConcept?.(i + 1);
+                                            }}
+                                            className="px-3 py-2 bg-purple-600 hover:bg-purple-500 rounded-lg text-white text-xs font-medium transition-colors"
+                                            title={`Select concept ${i + 1}`}
+                                        >
+                                            Select
+                                        </button>
+                                    </div>
+                                    <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent text-xs text-white px-2 py-1.5 truncate pointer-events-none">
                                         #{i + 1}
                                     </div>
                                 </div>
                             ))}
                         </div>
                         <p className="text-xs text-zinc-500 mt-2 text-center">
-                            Click to select, or say which one you like
+                            Hover to zoom or select
                         </p>
                     </div>
                 )}
             </div>
+
+            {/* Full-size Image Modal */}
+            <ImageExpandModal
+                image={expandedImage}
+                onClose={() => setExpandedImage(null)}
+            />
         </div>
     );
 }

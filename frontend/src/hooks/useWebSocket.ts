@@ -54,6 +54,10 @@ export function useWebSocket(
   const audioFilterRef = useRef<BiquadFilterNode | null>(null);
   const audioCompressorRef = useRef<DynamicsCompressorNode | null>(null);
 
+  // AI audio analyser for waveform visualization
+  const aiAnalyserRef = useRef<AnalyserNode | null>(null);
+  const aiAnalyserFrameRef = useRef<number | null>(null);
+
   // Audio processing toggle - set to false to bypass filter/compressor for testing
   const enableAudioProcessing = useRef<boolean>(false); // Toggle this to test raw audio
 
@@ -66,10 +70,13 @@ export function useWebSocket(
     updateAgentStatus,
     addAnnouncement,
     addTranscriptMessage,
+    appendLiveTranscript,
+    setLiveTranscript,
     setConnected,
     setProducerSpeaking,
     setPreviewConcepts,
     setCapturedReference,
+    setAiFrequencyData,
   } = useProjectStore();
 
   const handleMessage = useCallback(
@@ -95,16 +102,30 @@ export function useWebSocket(
             break;
 
           case 'text_output':
-            // Buffer fragmented transcript text
+            // Handle real-time transcript with live display
             if (message.text && message.role) {
-              if (transcriptBuffer.current && transcriptBuffer.current.role === message.role) {
+              const role = message.role as 'user' | 'assistant';
+
+              // Check if role changed - commit previous buffer first
+              if (transcriptBuffer.current && transcriptBuffer.current.role !== role) {
+                if (transcriptBuffer.current.text.trim()) {
+                  addTranscriptMessage({
+                    ...transcriptBuffer.current,
+                    timestamp: new Date().toISOString(),
+                  });
+                }
+                transcriptBuffer.current = null;
+              }
+
+              // Append to buffer
+              if (transcriptBuffer.current && transcriptBuffer.current.role === role) {
                 transcriptBuffer.current.text += message.text;
               } else {
-                transcriptBuffer.current = {
-                  role: message.role,
-                  text: message.text,
-                };
+                transcriptBuffer.current = { role, text: message.text };
               }
+
+              // Update live transcript for immediate display
+              appendLiveTranscript(role, message.text);
             }
             break;
 
@@ -119,6 +140,8 @@ export function useWebSocket(
               });
               transcriptBuffer.current = null; // Reset buffer
             }
+            // Clear live transcript (addTranscriptMessage also does this, but be explicit)
+            setLiveTranscript(null);
             break;
 
           case 'brief_update':
@@ -343,7 +366,7 @@ export function useWebSocket(
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [setBrief, updateBrief, addAsset, updateAgentStatus, addAnnouncement, addTranscriptMessage, setProducerSpeaking]
+    [setBrief, updateBrief, addAsset, updateAgentStatus, addAnnouncement, addTranscriptMessage, appendLiveTranscript, setLiveTranscript, setProducerSpeaking]
   );
 
   const initAudioChain = useCallback(() => {
@@ -380,10 +403,49 @@ export function useWebSocket(
     }
   }, []);
 
+  // Monitor AI audio frequency data for waveform visualization
+  const startAiFrequencyMonitor = useCallback(() => {
+    if (!aiAnalyserRef.current) return;
+
+    const dataArray = new Uint8Array(aiAnalyserRef.current.frequencyBinCount);
+    const NUM_BARS = 16;
+
+    const update = () => {
+      if (!aiAnalyserRef.current || !isPlayingRef.current) {
+        // Stop monitoring when not playing
+        setAiFrequencyData(Array(16).fill(0));
+        return;
+      }
+
+      aiAnalyserRef.current.getByteFrequencyData(dataArray);
+
+      // Downsample to NUM_BARS
+      const step = Math.floor(dataArray.length / NUM_BARS);
+      const frequencies: number[] = [];
+      for (let i = 0; i < NUM_BARS; i++) {
+        let sum = 0;
+        for (let j = 0; j < step; j++) {
+          sum += dataArray[i * step + j] || 0;
+        }
+        frequencies.push((sum / step) / 255);
+      }
+      setAiFrequencyData(frequencies);
+
+      aiAnalyserFrameRef.current = requestAnimationFrame(update);
+    };
+
+    update();
+  }, [setAiFrequencyData]);
+
   const playNextAudioBuffer = useCallback(() => {
     if (audioQueueRef.current.length === 0) {
       isPlayingRef.current = false;
       setProducerSpeaking(false);
+      setAiFrequencyData(Array(16).fill(0)); // Reset AI waveform
+      if (aiAnalyserFrameRef.current) {
+        cancelAnimationFrame(aiAnalyserFrameRef.current);
+        aiAnalyserFrameRef.current = null;
+      }
       console.log('[Audio Queue] ✓ Queue empty, producer finished speaking');
       return;
     }
@@ -402,6 +464,13 @@ export function useWebSocket(
       return;
     }
 
+    // Create AI analyser if not exists
+    if (!aiAnalyserRef.current) {
+      aiAnalyserRef.current = audioContextRef.current.createAnalyser();
+      aiAnalyserRef.current.fftSize = 64;
+      aiAnalyserRef.current.connect(audioContextRef.current.destination);
+    }
+
     // Resume AudioContext if suspended (browser autoplay policy)
     if (audioContextRef.current.state === 'suspended') {
       audioContextRef.current.resume().then(() => {
@@ -417,14 +486,25 @@ export function useWebSocket(
     currentSourceRef.current = source; // Track active source
 
     // Connect source - either to processing chain or direct to destination
+    // Always route through AI analyser for visualization
     if (enableAudioProcessing.current && audioFilterRef.current) {
-      // Connect source to the REUSED filter chain (not creating new filters!)
+      // source → filter → compressor → analyser → destination
       source.connect(audioFilterRef.current);
-      console.log('[Audio Queue] 🔊 Using audio processing (filter + compressor)');
+      // Reconnect compressor to analyser (if not already)
+      if (audioCompressorRef.current && aiAnalyserRef.current) {
+        audioCompressorRef.current.disconnect();
+        audioCompressorRef.current.connect(aiAnalyserRef.current);
+      }
+      console.log('[Audio Queue] 🔊 Using audio processing (filter + compressor + analyser)');
     } else {
-      // Bypass processing - connect directly to speakers
-      source.connect(audioContextRef.current.destination);
-      console.log('[Audio Queue] 🔊 Bypassing audio processing (raw audio)');
+      // source → analyser → destination
+      source.connect(aiAnalyserRef.current);
+      console.log('[Audio Queue] 🔊 Bypassing audio processing (raw audio + analyser)');
+    }
+
+    // Start frequency monitoring if not already running
+    if (!aiAnalyserFrameRef.current) {
+      startAiFrequencyMonitor();
     }
 
     // Use scheduled playback for gapless audio
@@ -453,10 +533,15 @@ export function useWebSocket(
         nextPlayTimeRef.current = 0;
         isPlayingRef.current = false;
         setProducerSpeaking(false);
+        setAiFrequencyData(Array(16).fill(0)); // Reset AI waveform
+        if (aiAnalyserFrameRef.current) {
+          cancelAnimationFrame(aiAnalyserFrameRef.current);
+          aiAnalyserFrameRef.current = null;
+        }
         console.log('[Audio Queue] ✓ All buffers played, producer finished speaking');
       }
     };
-  }, [setProducerSpeaking, initAudioChain]);
+  }, [setProducerSpeaking, setAiFrequencyData, initAudioChain, startAiFrequencyMonitor]);
 
   const handleAudioOutput = useCallback(async (audioBase64: string, mimeType: string) => {
     // Initialize audio chain if needed
@@ -681,6 +766,14 @@ export function useWebSocket(
       audioCompressorRef.current.disconnect();
       audioCompressorRef.current = null;
     }
+    if (aiAnalyserRef.current) {
+      aiAnalyserRef.current.disconnect();
+      aiAnalyserRef.current = null;
+    }
+    if (aiAnalyserFrameRef.current) {
+      cancelAnimationFrame(aiAnalyserFrameRef.current);
+      aiAnalyserFrameRef.current = null;
+    }
     if (audioContextRef.current) {
       audioContextRef.current.close();
       audioContextRef.current = null;
@@ -693,8 +786,9 @@ export function useWebSocket(
 
     setConnected(false);
     setProducerSpeaking(false);
+    setAiFrequencyData(Array(16).fill(0)); // Reset AI waveform
     console.log('[Audio] Cleaned up audio chain');
-  }, [setConnected, setProducerSpeaking]);
+  }, [setConnected, setProducerSpeaking, setAiFrequencyData]);
 
   const sendAudio = useCallback((audioData: ArrayBuffer) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {

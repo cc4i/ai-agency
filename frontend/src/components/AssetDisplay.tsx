@@ -14,7 +14,7 @@
 import { useProjectStore } from '@/stores/useProjectStore';
 import { cn } from '@/lib/utils';
 import { useState, useEffect, useMemo } from 'react';
-import { ExternalLink, Maximize2, X } from 'lucide-react';
+import { ExternalLink, Maximize2, X, Target, Palette, Film, Music, Code } from 'lucide-react';
 
 interface AssetDisplayProps {
   sendMessage?: (message: any) => void;
@@ -29,7 +29,7 @@ export function AssetDisplay({ sendMessage }: AssetDisplayProps) {
     return (
       <div className="flex-1 flex items-center justify-center text-zinc-500">
         <div className="text-center">
-          <div className="text-6xl mb-4">🎨</div>
+          <Palette className="w-16 h-16 mx-auto mb-4 text-zinc-600" />
           <div className="text-lg">Waiting for creative assets...</div>
         </div>
       </div>
@@ -56,7 +56,8 @@ function StrategyAssets({ data }: { data: any[] }) {
   return (
     <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-4">
       <h3 className="text-base font-semibold text-white mb-3 flex items-center gap-2">
-        🎯 Strategy & Personas
+        <Target className="w-5 h-5 text-purple-400" />
+        Strategy & Personas
       </h3>
 
       {/* Personas */}
@@ -183,7 +184,8 @@ function ArtDirectorAssets({ data, sendMessage }: ArtDirectorAssetsProps) {
   return (
     <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-4">
       <h3 className="text-base font-semibold text-white mb-3 flex items-center gap-2">
-        🎨 Hero Images
+        <Palette className="w-5 h-5 text-purple-400" />
+        Hero Images
         {assetData.current_generation && (
           <span className="text-xs text-zinc-500">
             Generation {assetData.current_generation}
@@ -329,7 +331,8 @@ function VideoProducerAssets({ data }: { data: any[] }) {
   return (
     <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-4">
       <h3 className="text-base font-semibold text-white mb-3 flex items-center gap-2">
-        🎬 Social Media Video
+        <Film className="w-5 h-5 text-purple-400" />
+        Social Media Video
       </h3>
 
       {assetData.video?.url && (
@@ -362,7 +365,8 @@ function AudioTeamAssets({ data }: { data: any[] }) {
   return (
     <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-4">
       <h3 className="text-base font-semibold text-white mb-3 flex items-center gap-2">
-        🎵 Audio Assets
+        <Music className="w-5 h-5 text-purple-400" />
+        Audio Assets
       </h3>
 
       <div className="space-y-4">
@@ -441,7 +445,8 @@ function WebDevAssets({ data }: { data: any[] }) {
     <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-4">
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-base font-semibold text-white flex items-center gap-2">
-          💻 Landing Page
+          <Code className="w-5 h-5 text-purple-400" />
+          Landing Page
         </h3>
         {code && (
           <button
